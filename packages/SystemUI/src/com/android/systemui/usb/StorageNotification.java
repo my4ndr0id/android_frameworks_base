@@ -157,8 +157,11 @@ public class StorageNotification extends StorageEventListener {
              * Storage is now mounted. Dismiss any media notifications,
              * and enable UMS notification if connected.
              */
-            setMediaStorageNotification(0, 0, 0, false, false, null);
-            updateUsbMassStorageNotification(mUmsAvailable);
+            if (!(oldState.equals(Environment.MEDIA_SHARED)
+                    && mStorageManager.isUsbMassStorageEnabled())) {
+                setMediaStorageNotification(0, 0, 0, false, false, null);
+                updateUsbMassStorageNotification(mUmsAvailable);
+            }
         } else if (newState.equals(Environment.MEDIA_UNMOUNTED)) {
             /*
              * Storage is now unmounted. We may have been unmounted

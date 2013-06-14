@@ -1403,33 +1403,42 @@ class MountService extends IMountService.Stub
         validatePermission(android.Manifest.permission.MOUNT_UNMOUNT_FILESYSTEMS);
 
         // TODO: Add support for multiple share methods
-        for (String path : getShareableVolumes()) {
-            /*
-             * If the volume is mounted and we're enabling then unmount it
-             */
-            String vs = getVolumeState(path);
-            String method = "ums";
-            if (enable && vs.equals(Environment.MEDIA_MOUNTED)) {
-                // Override for isUsbMassStorageEnabled()
-                setUmsEnabling(enable);
-                UmsEnableCallBack umscb = new UmsEnableCallBack(path, method, true);
-                mHandler.sendMessage(mHandler.obtainMessage(H_UNMOUNT_PM_UPDATE, umscb));
-                // Clear override
-                setUmsEnabling(false);
+        String method = "ums";
+        if (enable) {
+            for (String path : getShareableVolumes()) {
+                /*
+                 * If the volume is mounted and we're enabling then unmount it
+                 */
+                String vs = getVolumeState(path);
+                if (vs.equals(Environment.MEDIA_MOUNTED)) {
+                    // Override for isUsbMassStorageEnabled()
+                    setUmsEnabling(enable);
+                    UmsEnableCallBack umscb = new UmsEnableCallBack(path, method, true);
+                    mHandler.sendMessage(mHandler.obtainMessage(H_UNMOUNT_PM_UPDATE, umscb));
+                    // Clear override
+                    setUmsEnabling(false);
+                }
             }
-            /*
-             * If we disabled UMS then mount the volume
-             */
-            if (!enable) {
-                doShareUnshareVolume(path, method, enable);
-                if (doMountVolume(path) != StorageResultCode.OperationSucceeded) {
-                    Slog.e(TAG, "Failed to remount " + path +
-                            " after disabling share method " + method);
+        } else if (!enable) {
+            synchronized (mVolumes) {
+                for (StorageVolume v : mVolumes) {
                     /*
-                     * Even though the mount failed, the unshare didn't so don't indicate an error.
-                     * The mountVolume() call will have set the storage state and sent the necessary
-                     * broadcasts.
+                     * If we disabled UMS then mount the volume
                      */
+                    String path = v.getPath();
+                    String vs = getVolumeState(path);
+                    if (vs.equals(Environment.MEDIA_SHARED)) {
+                        doShareUnshareVolume(path, method, enable);
+                        if (doMountVolume(path) != StorageResultCode.OperationSucceeded) {
+                            Slog.e(TAG, "Failed to remount " + path +
+                                    " after disabling share method " + method);
+                            /*
+                             * Even though the mount failed, the unshare didn't so don't indicate an error.
+                             * The mountVolume() call will have set the storage state and sent the necessary
+                             * broadcasts.
+                             */
+                        }
+                    }
                 }
             }
         }
