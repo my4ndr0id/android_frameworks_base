@@ -231,8 +231,8 @@ public final class Telephony {
                 Uri uri, String address, String body, String subject,
                 Long date, boolean read, boolean deliveryReport) {
             return addMessageToUri(resolver, uri, address, body, subject,
-                    date, read, deliveryReport, -1L,
-                    MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                    date, read, deliveryReport, -1L, -1);
+                    
         }
 
         /**
@@ -274,8 +274,7 @@ public final class Telephony {
                 Uri uri, String address, String body, String subject,
                 Long date, boolean read, boolean deliveryReport, long threadId) {
             return addMessageToUri(resolver, uri, address, body, subject,
-                    date, read, deliveryReport, threadId,
-                    MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                    date, read, deliveryReport, threadId, -1);
         }
 
         /**
@@ -403,8 +402,7 @@ public final class Telephony {
                     String address, String body, String subject, Long date,
                     boolean read) {
                 return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, read, false,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                        subject, date, read, false, -1);
             }
 
             /**
@@ -455,8 +453,7 @@ public final class Telephony {
             public static Uri addMessage(ContentResolver resolver,
                     String address, String body, String subject, Long date) {
                 return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, false,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                        subject, date, true, false, -1);
             }
 
             /**
@@ -505,8 +502,7 @@ public final class Telephony {
             public static Uri addMessage(ContentResolver resolver,
                     String address, String body, String subject, Long date) {
                 return addMessageToUri(resolver, CONTENT_URI, address, body,
-                        subject, date, true, false,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                        subject, date, true, false, -1);
             }
 
             /**
@@ -573,8 +569,7 @@ public final class Telephony {
                     String address, String body, String subject, Long date,
                     boolean deliveryReport, long threadId) {
                 return addMessageToUri(resolver, CONTENT_URI, address, body, subject, date,
-                        true, deliveryReport, threadId,
-                        MSimSmsManager.getDefault().getPreferredSmsSubscription());
+                        true, deliveryReport, threadId, -1);
             }
 
             /**
@@ -826,7 +821,7 @@ public final class Telephony {
                 Object[] messages = (Object[]) intent.getSerializableExtra("pdus");
                 String format = intent.getStringExtra("format");
                 byte[][] pduObjs = new byte[messages.length][];
-                int subId = intent.getIntExtra(MSimConstants.SUBSCRIPTION_KEY, 0);
+                int subId = intent.getIntExtra(MSimConstants.SUBSCRIPTION_KEY, -1);
 
                 Log.v(TAG, " getMessagesFromIntent sub_id : " + subId);
 
