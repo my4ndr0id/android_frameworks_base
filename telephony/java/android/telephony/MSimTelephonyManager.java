@@ -253,6 +253,23 @@ public class MSimTelephonyManager extends TelephonyManager {
     }
 
     /**
+     * Returns the ISO country code equivalent of a subscription's current registered
+     * operator's MCC (Mobile Country Code).
+     * <p>
+     * Availability: Only when user is registered to a network. Result may be
+     * unreliable on CDMA networks (use {@link #getPhoneType()} to determine if
+     * on a CDMA network).
+     *
+     * @param subscription
+
+     * @hide
+     */
+    public String getNetworkCountryIso(int subscription) {
+        return getTelephonyProperty(TelephonyProperties.PROPERTY_OPERATOR_ISO_COUNTRY,
+                subscription, "");
+    }
+
+    /**
      * Returns a constant indicating the radio technology (network type)
      * currently in use on the device for data transmission for a subscription
      * @return the network type
