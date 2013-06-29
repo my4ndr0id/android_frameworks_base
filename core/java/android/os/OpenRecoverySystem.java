@@ -1,0 +1,645 @@
+/*
+ * Copyright (C) 2010 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package android.os;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.text.TextUtils;
+import android.util.Log;
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.RandomAccessFile;
+import java.security.GeneralSecurityException;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.security.SignatureException;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.util.Collection;
+import java.util.Enumeration;
+import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
+import org.apache.harmony.security.asn1.BerInputStream;
+import org.apache.harmony.security.pkcs7.ContentInfo;
+import org.apache.harmony.security.pkcs7.SignedData;
+import org.apache.harmony.security.pkcs7.SignerInfo;
+import org.apache.harmony.security.provider.cert.X509CertImpl;
+
+/**
+ * RecoverySystem contains methods for interacting with the Android
+ * recovery system (the separate partition that can be used to install
+ * system updates, wipe user data, etc.)
+ */
+public class OpenRecoverySystem {
+    private static final String TAG = "OpenRecoverySystem";
+
+    /**
+     * Default location of zip file containing public keys (X509
+     * certs) authorized to sign OTA updates.
+     */
+    private static final File DEFAULT_KEYSTORE =
+        new File("/system/etc/security/otacerts.zip");
+
+    /** Send progress to listeners no more often than this (in ms). */
+    private static final long PUBLISH_PROGRESS_INTERVAL_MS = 500;
+
+    /** Used to communicate with recovery.  See bootable/recovery/recovery.c. */
+    private static File RECOVERY_DIR = new File("/cache/recovery");
+    private static File COMMAND_FILE = new File(RECOVERY_DIR, "command");
+    private static File SCRIPT_FILE = new File(RECOVERY_DIR, "openrecoveryscript");
+    private static File LOG_FILE = new File(RECOVERY_DIR, "log");
+    private static String LAST_PREFIX = "last_";
+
+    // Length limits for reading files.
+    private static int LOG_FILE_MAX_LENGTH = 64 * 1024;
+
+    /**
+     * Interface definition for a callback to be invoked regularly as
+     * verification proceeds.
+     */
+    public interface ProgressListener {
+        /**
+         * Called periodically as the verification progresses.
+         *
+         * @param progress  the approximate percentage of the
+         *        verification that has been completed, ranging from 0
+         *        to 100 (inclusive).
+         */
+        public void onProgress(int progress);
+    }
+
+    /** @return the set of certs that can be used to sign an OTA package. */
+    private static HashSet<Certificate> getTrustedCerts(File keystore)
+        throws IOException, GeneralSecurityException {
+        HashSet<Certificate> trusted = new HashSet<Certificate>();
+        if (keystore == null) {
+            keystore = DEFAULT_KEYSTORE;
+        }
+        ZipFile zip = new ZipFile(keystore);
+        try {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            Enumeration<? extends ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                InputStream is = zip.getInputStream(entry);
+                try {
+                    trusted.add(cf.generateCertificate(is));
+                } finally {
+                    is.close();
+                }
+            }
+        } finally {
+            zip.close();
+        }
+        return trusted;
+    }
+
+    /**
+     * Verify the cryptographic signature of a system update package
+     * before installing it.  Note that the package is also verified
+     * separately by the installer once the device is rebooted into
+     * the recovery system.  This function will return only if the
+     * package was successfully verified; otherwise it will throw an
+     * exception.
+     *
+     * Verification of a package can take significant time, so this
+     * function should not be called from a UI thread.  Interrupting
+     * the thread while this function is in progress will result in a
+     * SecurityException being thrown (and the thread's interrupt flag
+     * will be cleared).
+     *
+     * @param packageFile  the package to be verified
+     * @param listener     an object to receive periodic progress
+     * updates as verification proceeds.  May be null.
+     * @param deviceCertsZipFile  the zip file of certificates whose
+     * public keys we will accept.  Verification succeeds if the
+     * package is signed by the private key corresponding to any
+     * public key in this file.  May be null to use the system default
+     * file (currently "/system/etc/security/otacerts.zip").
+     *
+     * @throws IOException if there were any errors reading the
+     * package or certs files.
+     * @throws GeneralSecurityException if verification failed
+     */
+    public static void verifyPackage(File packageFile,
+                                     ProgressListener listener,
+                                     File deviceCertsZipFile)
+        throws IOException, GeneralSecurityException {
+        long fileLen = packageFile.length();
+
+        RandomAccessFile raf = new RandomAccessFile(packageFile, "r");
+        try {
+            int lastPercent = 0;
+            long lastPublishTime = System.currentTimeMillis();
+            if (listener != null) {
+                listener.onProgress(lastPercent);
+            }
+
+            raf.seek(fileLen - 6);
+            byte[] footer = new byte[6];
+            raf.readFully(footer);
+
+            if (footer[2] != (byte)0xff || footer[3] != (byte)0xff) {
+                throw new SignatureException("no signature in file (no footer)");
+            }
+
+            int commentSize = (footer[4] & 0xff) | ((footer[5] & 0xff) << 8);
+            int signatureStart = (footer[0] & 0xff) | ((footer[1] & 0xff) << 8);
+
+            byte[] eocd = new byte[commentSize + 22];
+            raf.seek(fileLen - (commentSize + 22));
+            raf.readFully(eocd);
+
+            // Check that we have found the start of the
+            // end-of-central-directory record.
+            if (eocd[0] != (byte)0x50 || eocd[1] != (byte)0x4b ||
+                eocd[2] != (byte)0x05 || eocd[3] != (byte)0x06) {
+                throw new SignatureException("no signature in file (bad footer)");
+            }
+
+            for (int i = 4; i < eocd.length-3; ++i) {
+                if (eocd[i  ] == (byte)0x50 && eocd[i+1] == (byte)0x4b &&
+                    eocd[i+2] == (byte)0x05 && eocd[i+3] == (byte)0x06) {
+                    throw new SignatureException("EOCD marker found after start of EOCD");
+                }
+            }
+
+            // The following code is largely copied from
+            // JarUtils.verifySignature().  We could just *call* that
+            // method here if that function didn't read the entire
+            // input (ie, the whole OTA package) into memory just to
+            // compute its message digest.
+
+            BerInputStream bis = new BerInputStream(
+                new ByteArrayInputStream(eocd, commentSize+22-signatureStart, signatureStart));
+            ContentInfo info = (ContentInfo)ContentInfo.ASN1.decode(bis);
+            SignedData signedData = info.getSignedData();
+            if (signedData == null) {
+                throw new IOException("signedData is null");
+            }
+            Collection encCerts = signedData.getCertificates();
+            if (encCerts.isEmpty()) {
+                throw new IOException("encCerts is empty");
+            }
+            // Take the first certificate from the signature (packages
+            // should contain only one).
+            Iterator it = encCerts.iterator();
+            X509Certificate cert = null;
+            if (it.hasNext()) {
+                cert = new X509CertImpl((org.apache.harmony.security.x509.Certificate)it.next());
+            } else {
+                throw new SignatureException("signature contains no certificates");
+            }
+
+            List sigInfos = signedData.getSignerInfos();
+            SignerInfo sigInfo;
+            if (!sigInfos.isEmpty()) {
+                sigInfo = (SignerInfo)sigInfos.get(0);
+            } else {
+                throw new IOException("no signer infos!");
+            }
+
+            // Check that the public key of the certificate contained
+            // in the package equals one of our trusted public keys.
+
+            HashSet<Certificate> trusted = getTrustedCerts(
+                deviceCertsZipFile == null ? DEFAULT_KEYSTORE : deviceCertsZipFile);
+
+            PublicKey signatureKey = cert.getPublicKey();
+            boolean verified = false;
+            for (Certificate c : trusted) {
+                if (c.getPublicKey().equals(signatureKey)) {
+                    verified = true;
+                    break;
+                }
+            }
+            if (!verified) {
+                throw new SignatureException("signature doesn't match any trusted key");
+            }
+
+            // The signature cert matches a trusted key.  Now verify that
+            // the digest in the cert matches the actual file data.
+
+            // The verifier in recovery *only* handles SHA1withRSA
+            // signatures.  SignApk.java always uses SHA1withRSA, no
+            // matter what the cert says to use.  Ignore
+            // cert.getSigAlgName(), and instead use whatever
+            // algorithm is used by the signature (which should be
+            // SHA1withRSA).
+
+            String da = sigInfo.getDigestAlgorithm();
+            String dea = sigInfo.getDigestEncryptionAlgorithm();
+            String alg = null;
+            if (da == null || dea == null) {
+                // fall back to the cert algorithm if the sig one
+                // doesn't look right.
+                alg = cert.getSigAlgName();
+            } else {
+                alg = da + "with" + dea;
+            }
+            Signature sig = Signature.getInstance(alg);
+            sig.initVerify(cert);
+
+            // The signature covers all of the OTA package except the
+            // archive comment and its 2-byte length.
+            long toRead = fileLen - commentSize - 2;
+            long soFar = 0;
+            raf.seek(0);
+            byte[] buffer = new byte[4096];
+            boolean interrupted = false;
+            while (soFar < toRead) {
+                interrupted = Thread.interrupted();
+                if (interrupted) break;
+                int size = buffer.length;
+                if (soFar + size > toRead) {
+                    size = (int)(toRead - soFar);
+                }
+                int read = raf.read(buffer, 0, size);
+                sig.update(buffer, 0, read);
+                soFar += read;
+
+                if (listener != null) {
+                    long now = System.currentTimeMillis();
+                    int p = (int)(soFar * 100 / toRead);
+                    if (p > lastPercent &&
+                        now - lastPublishTime > PUBLISH_PROGRESS_INTERVAL_MS) {
+                        lastPercent = p;
+                        lastPublishTime = now;
+                        listener.onProgress(lastPercent);
+                    }
+                }
+            }
+            if (listener != null) {
+                listener.onProgress(100);
+            }
+
+            if (interrupted) {
+                throw new SignatureException("verification was interrupted");
+            }
+
+            if (!sig.verify(sigInfo.getEncryptedDigest())) {
+                throw new SignatureException("signature digest verification failed");
+            }
+        } finally {
+            raf.close();
+        }
+    }
+
+    /**
+     * Reboots the device in order to install the given update
+     * package.
+     * Requires the {@link android.Manifest.permission#REBOOT} permission.
+     *
+     * @param context      the Context to use
+     * @param packageFile  the update package to install.  Must be on
+     * a partition mountable by recovery.  (The set of partitions
+     * known to recovery may vary from device to device.  Generally,
+     * /cache and /data are safe.)
+     *
+     * @throws IOException  if writing the recovery command file
+     * fails, or if the reboot itself fails.
+     */
+    public static void installPackage(Context context, File packageFile)
+        throws IOException {
+        String filename = packageFile.getCanonicalPath();
+        Log.w(TAG, "!!! REBOOTING TO INSTALL " + filename + " !!!");
+        String arg = RecoveryAction.installPackage(packageFile);
+        bootCommand(context, arg);
+    }
+
+    /**
+     * Reboots the device and wipes the user data partition.  This is
+     * sometimes called a "factory reset", which is something of a
+     * misnomer because the system partition is not restored to its
+     * factory state.
+     * Requires the {@link android.Manifest.permission#REBOOT} permission.
+     *
+     * @param context  the Context to use
+     *
+     * @throws IOException  if writing the recovery command file
+     * fails, or if the reboot itself fails.
+     */
+    public static void rebootWipeUserData(Context context) throws IOException {
+        final ConditionVariable condition = new ConditionVariable();
+
+        Intent intent = new Intent("android.intent.action.MASTER_CLEAR_NOTIFICATION");
+        context.sendOrderedBroadcast(intent, android.Manifest.permission.MASTER_CLEAR,
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        condition.open();
+                    }
+                }, null, 0, null, null);
+
+        // Block until the ordered broadcast has completed.
+        condition.block();
+
+        bootCommand(context, RecoveryAction.wipe(EnumSet.of(RecoveryAction.WipeTarget.Data)));
+    }
+
+    /**
+     * Reboot into the recovery system to wipe the /cache partition.
+     * @throws IOException if something goes wrong.
+     */
+    public static void rebootWipeCache(Context context) throws IOException {
+        bootCommand(context, RecoveryAction.wipe(EnumSet.of(RecoveryAction.WipeTarget.Cache)));
+    }
+
+    /**
+     * Reboot into the recovery system to run a set of actions
+     * @throws IOException if something goes wrong.
+     */
+    public static void clearQueuedActions() throws IOException {
+        COMMAND_FILE.delete();  // In case it's not writable
+        SCRIPT_FILE.delete();
+    }
+
+    /**
+     * Reboot into the recovery system to run a set of actions
+     * @param action the action to queue
+     * @throws IOException if something goes wrong.
+     */
+    public static void queueAction(String action) throws IOException {
+        RECOVERY_DIR.mkdirs();  // In case we need it
+
+        FileWriter script = new FileWriter(SCRIPT_FILE, true);
+        try {
+            script.write(action);
+            script.write("\n");
+        } finally {
+            script.close();
+        }
+    }
+
+    /**
+     * Reboot into the recovery system to run a custom OpenRecoveryScript
+     * @param openRecoveryScript to pass to the recovery utility.
+     * @throws IOException if something goes wrong.
+     */
+    public static void rebootCustomScript(Context context, String openRecoveryScript) throws IOException {
+        bootCommand(context, openRecoveryScript);
+    }
+
+    /**
+     * Reboot into the recovery system with the supplied argument.
+     * @param arg to pass to the recovery utility.
+     * @throws IOException if something goes wrong.
+     */
+    private static void bootCommand(Context context, String arg) throws IOException {
+        RECOVERY_DIR.mkdirs();  // In case we need it
+        COMMAND_FILE.delete();  // In case it's not writable
+        SCRIPT_FILE.delete();
+        LOG_FILE.delete();
+
+        FileWriter command = new FileWriter(SCRIPT_FILE);
+        try {
+            command.write(arg);
+            command.write("\n");
+        } finally {
+            command.close();
+        }
+
+        // Having written the command file, go ahead and reboot
+        PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        pm.reboot("recovery");
+
+        throw new IOException("Reboot failed (no permissions?)");
+    }
+
+    /**
+     * Called after booting to process and remove recovery-related files.
+     * @return the log file from recovery, or null if none was found.
+     *
+     * @hide
+     */
+    public static String handleAftermath() {
+        // Record the tail of the LOG_FILE
+        String log = null;
+        try {
+            log = FileUtils.readTextFile(LOG_FILE, -LOG_FILE_MAX_LENGTH, "...\n");
+        } catch (FileNotFoundException e) {
+            Log.i(TAG, "No recovery log file");
+        } catch (IOException e) {
+            Log.e(TAG, "Error reading recovery log", e);
+        }
+
+        // Delete everything in RECOVERY_DIR except those beginning
+        // with LAST_PREFIX
+        String[] names = RECOVERY_DIR.list();
+        for (int i = 0; names != null && i < names.length; i++) {
+            if (names[i].startsWith(LAST_PREFIX)) continue;
+            File f = new File(RECOVERY_DIR, names[i]);
+            if (!f.delete()) {
+                Log.e(TAG, "Can't delete: " + f);
+            } else {
+                Log.i(TAG, "Deleted: " + f);
+            }
+        }
+
+        return log;
+    }
+
+    private void OpenRecoverySystem() { }  // Do not instantiate
+
+    public static class RecoveryAction {
+        public static enum BackupRestoreOption {
+            System(1<<0),
+            Data(1<<1),
+            Cache(1<<2),
+            Recovery(1<<3),
+            Boot(1<<4),
+            AndroidSecure(1<<5),
+            SdExt(1<<6),
+            UseCompression(1<<7),
+            SkipMd5(1<<8);
+    
+            private final long backupRestoreOptionValue;
+    
+            BackupRestoreOption(long value) {
+                backupRestoreOptionValue = value;
+            }
+    
+            public long getBackupRestoreOptionValue() {
+                return backupRestoreOptionValue;
+            }
+        }
+    
+        public static enum WipeTarget {
+            Cache(1<<0),
+            Dalvik(1<<1),
+            Data(1<<2);
+    
+            private final long wipeTargetValue;
+    
+            WipeTarget(long value) {
+                wipeTargetValue = value;
+            }
+    
+            public long getWipeTargetValue() {
+                return wipeTargetValue;
+            }
+        }
+    
+        private static final String CMD_INSTALL_PACKAGE = "install";
+        private static final String CMD_WIPE_CACHE = "wipe cache";
+        private static final String CMD_WIPE_DALVIK = "wipe dalvik";
+        private static final String CMD_WIPE_DATA = "wipe data";
+        private static final String CMD_BACKUP = "backup";
+        private static final String CMD_RESTORE = "restore";
+        private static final String CMD_MOUNT = "mount";
+        private static final String CMD_UNMOUNT = "unmount";
+        private static final String CMD_SET_VARIABLE = "set";
+        private static final String CMD_MKDIR = "mkdir";
+        private static final String CMD_CMD = "install";
+        private static final String CMD_PRINT = "print";
+        private static final String CMD_SIDELOAD = "sideload";
+    
+        public static String installPackage(File packageFile) throws IOException {
+            String filename = packageFile.getCanonicalPath();
+            return CMD_INSTALL_PACKAGE + " " + filename;
+        }
+    
+        public static String installPackage(String packageFilePath) throws IOException {
+            return CMD_INSTALL_PACKAGE + " " + packageFilePath;
+        }
+    
+        public static String wipe(Set<WipeTarget> wipeTargets) {
+            String actionString = "";
+    
+            if (wipeTargets.contains(WipeTarget.Cache))
+                actionString += CMD_WIPE_CACHE + "\n";
+            if (wipeTargets.contains(WipeTarget.Dalvik))
+                actionString += CMD_WIPE_DALVIK + "\n";
+            if (wipeTargets.contains(WipeTarget.Data))
+                actionString += CMD_WIPE_DATA + "\n";
+    
+            return actionString;
+        }
+    
+        public static String backup() {
+            EnumSet<BackupRestoreOption> defaultBackupOptions = 
+                    EnumSet.of(BackupRestoreOption.System, BackupRestoreOption.Data, BackupRestoreOption.Boot);
+            return backup(defaultBackupOptions, null);
+        }
+    
+        public static String backup(Set<BackupRestoreOption> backupOptions) {
+            return backup(backupOptions, null);
+        }
+    
+        public static String backup(Set<BackupRestoreOption> backupOptions, String backupName) {
+            String actionString = CMD_BACKUP + " ";
+    
+            if (backupOptions == null) {
+                actionString += "SDB";
+            } else {
+                if (backupOptions.contains(BackupRestoreOption.System))
+                    actionString += "S";
+                if (backupOptions.contains(BackupRestoreOption.Data))
+                    actionString += "D";
+                if (backupOptions.contains(BackupRestoreOption.Cache))
+                    actionString += "C";
+                if (backupOptions.contains(BackupRestoreOption.Recovery))
+                    actionString += "R";
+                if (backupOptions.contains(BackupRestoreOption.Boot))
+                    actionString += "B";
+                if (backupOptions.contains(BackupRestoreOption.AndroidSecure))
+                    actionString += "A";
+                if (backupOptions.contains(BackupRestoreOption.SdExt))
+                    actionString += "E";
+                if (backupOptions.contains(BackupRestoreOption.UseCompression))
+                    actionString += "O";
+                if (backupOptions.contains(BackupRestoreOption.SkipMd5))
+                    actionString += "M";
+            }
+    
+            if (!TextUtils.isEmpty(backupName)) {
+                actionString += " " + backupName;
+            }
+    
+            return actionString;
+        }
+        public static String restore(String backupName) {
+            return restore(backupName, null);
+        }
+    
+        public static String restore(String backupName, Set<BackupRestoreOption> restoreOptions)
+                throws IllegalArgumentException {
+            if (TextUtils.isEmpty(backupName))
+                throw new IllegalArgumentException("backupName cannot be null");
+    
+            String actionString = CMD_RESTORE + " " + backupName;
+    
+            if (restoreOptions != null) {
+                if (restoreOptions.contains(BackupRestoreOption.System))
+                    actionString += "S";
+                if (restoreOptions.contains(BackupRestoreOption.Data))
+                    actionString += "D";
+                if (restoreOptions.contains(BackupRestoreOption.Cache))
+                    actionString += "C";
+                if (restoreOptions.contains(BackupRestoreOption.Recovery))
+                    actionString += "R";
+                if (restoreOptions.contains(BackupRestoreOption.Boot))
+                    actionString += "B";
+                if (restoreOptions.contains(BackupRestoreOption.AndroidSecure))
+                    actionString += "A";
+                if (restoreOptions.contains(BackupRestoreOption.SdExt))
+                    actionString += "E";
+                if (restoreOptions.contains(BackupRestoreOption.SkipMd5))
+                    actionString += "M";
+            }
+    
+            return actionString;
+        }
+    
+        public static String mount(String mountPoint) {
+            return CMD_MOUNT + " " + mountPoint;
+        }
+    
+        public static String unMount(String mountPoint) {
+            return CMD_UNMOUNT + " " + mountPoint;
+        }
+    
+        public static String setVariable(String variableName, String value) {
+            return CMD_SET_VARIABLE + " " + variableName + " " + value;
+        }
+    
+        public static String mkdir(String directory) {
+            return CMD_MKDIR + " " + directory;
+        }
+    
+        public static String printMessage(String message) {
+            return CMD_PRINT + " " + message;
+        }
+    
+        public static String sideload() {
+            return CMD_SIDELOAD;
+        }
+    }
+}
