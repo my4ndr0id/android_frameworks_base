@@ -28,7 +28,7 @@ LOCAL_SRC_FILES := \
     ZipFile.cpp
 
 
-LOCAL_CFLAGS += -Wno-format-y2k
+LOCAL_CFLAGS += -Wno-format-y2k -fpermissive
 
 LOCAL_C_INCLUDES += external/expat/lib
 LOCAL_C_INCLUDES += external/libpng

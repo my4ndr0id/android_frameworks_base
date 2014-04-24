@@ -181,7 +181,7 @@ $(GEN): $(intermediates)/%.cpp : $(LOCAL_PATH)/%.cpp.rsg
 
 LOCAL_GENERATED_SOURCES += $(GEN)
 
-LOCAL_CFLAGS += -Werror -Wall -Wno-unused-parameter -Wno-unused-variable
+LOCAL_CFLAGS += -Werror -Wall -Wno-unused-parameter -Wno-unused-variable -fpermissive
 LOCAL_CFLAGS += -DANDROID_RS_SERIALIZE
 LOCAL_CFLAGS += -fPIC
 
