@@ -3,6 +3,7 @@
 /* //device/apps/common/assets/res/any/colors.xml
 **
 ** Copyright 2006, The Android Open Source Project
+** Copyright 2014, alexforsale! Project
 **
 ** Licensed under the Apache License, Version 2.0 (the "License");
 ** you may not use this file except in compliance with the License.
@@ -510,5 +511,21 @@
         <item>@string/description_target_camera</item>
         <item>@null</item>
     </array>
+
+    <!-- Defines the shutdown options shown in the reboot dialog. -->
+    <array name="shutdown_reboot_options" translatable="false">
+        <item>@string/reboot_reboot</item>
+        <item>@string/reboot_recovery</item>
+        <item>@string/reboot_bootloader</item>
+    </array>
+
+    <!-- Do not translate. Defines the shutdown actions passed to the kernel.
+         The first item should be empty for regular reboot. -->
+    <string-array name="shutdown_reboot_actions" translatable="false">
+        <item></item>
+        <item>recovery</item>
+        <item>bootloader</item>
+    </string-array>
+
 
 </resources>
