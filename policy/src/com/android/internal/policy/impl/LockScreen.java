@@ -22,24 +22,43 @@ import com.android.internal.widget.LockPatternUtils;
 import com.android.internal.widget.SlidingTab;
 import com.android.internal.widget.WaveView;
 import com.android.internal.widget.multiwaveview.MultiWaveView;
+import com.android.internal.widget.multiwaveview.TargetDrawable;
 
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ActivityNotFoundException;
+import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.telephony.TelephonyManager;
+import android.content.res.Resources.NotFoundException;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.InsetDrawable;
+import android.graphics.drawable.LayerDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.*;
+import android.widget.ImageView.ScaleType;
+import android.widget.LinearLayout.LayoutParams;
 import android.util.Log;
 import android.media.AudioManager;
 import android.provider.MediaStore;
 import android.provider.Settings;
 
 import java.io.File;
+import java.net.URISyntaxException;
+import java.util.ArrayList;
 
 /**
  * The screen within {@link LockPatternKeyguardView} that shows general
@@ -187,6 +206,9 @@ class LockScreen extends LinearLayout implements KeyguardScreen {
 
         private final MultiWaveView mMultiWaveView;
         private boolean mCameraDisabled;
+        private String[] mStoredTargets;
+        private int mTargetOffset;
+        private boolean mIsScreenLarge;
 
         MultiWaveViewMethods(MultiWaveView multiWaveView) {
             mMultiWaveView = multiWaveView;
@@ -201,6 +223,34 @@ class LockScreen extends LinearLayout implements KeyguardScreen {
                 mCameraDisabled = mMultiWaveView.getTargetResourceId()
                         != R.array.lockscreen_targets_with_camera;
             }
+        }
+
+        public boolean isScreenLarge() {
+            final int screenSize = Resources.getSystem().getConfiguration().screenLayout &
+                    Configuration.SCREENLAYOUT_SIZE_MASK;
+            boolean isScreenLarge = screenSize == Configuration.SCREENLAYOUT_SIZE_LARGE ||
+                    screenSize == Configuration.SCREENLAYOUT_SIZE_XLARGE;
+            return isScreenLarge;
+        }
+
+        private StateListDrawable getLayeredDrawable(Drawable back, Drawable front, int inset, boolean frontBlank) {
+            Resources res = getResources();
+            InsetDrawable[] inactivelayer = new InsetDrawable[2];
+            InsetDrawable[] activelayer = new InsetDrawable[2];
+            inactivelayer[0] = new InsetDrawable(res.getDrawable(com.android.internal.R.drawable.ic_lockscreen_lock_pressed), 0, 0, 0, 0);
+            inactivelayer[1] = new InsetDrawable(front, inset, inset, inset, inset);
+            activelayer[0] = new InsetDrawable(back, 0, 0, 0, 0);
+            activelayer[1] = new InsetDrawable(frontBlank ? res.getDrawable(android.R.color.transparent) : front, inset, inset, inset, inset);
+            StateListDrawable states = new StateListDrawable();
+            LayerDrawable inactiveLayerDrawable = new LayerDrawable(inactivelayer);
+            inactiveLayerDrawable.setId(0, 0);
+            inactiveLayerDrawable.setId(1, 1);
+            LayerDrawable activeLayerDrawable = new LayerDrawable(activelayer);
+            activeLayerDrawable.setId(0, 0);
+            activeLayerDrawable.setId(1, 1);
+            states.addState(TargetDrawable.STATE_INACTIVE, inactiveLayerDrawable);
+            states.addState(TargetDrawable.STATE_ACTIVE, activeLayerDrawable);
+            return states;
         }
 
         public void updateResources() {
@@ -388,6 +438,46 @@ class LockScreen extends LinearLayout implements KeyguardScreen {
                 + (mUnlockWidget.isHardwareAccelerated() ? "on":"off"));
     }
 
+    static void setBackground(Context context, ViewGroup layout) {
+        String lockBack = Settings.System.getString(context.getContentResolver(), Settings.System.LOCKSCREEN_BACKGROUND);
+        if (lockBack != null) {
+            if (!lockBack.isEmpty()) {
+                try {
+                    layout.setBackgroundColor(Integer.parseInt(lockBack));
+                } catch(NumberFormatException e) {
+                    e.printStackTrace();
+                }
+            } else {
+                try {
+                    layout.getParent();
+                    ViewParent parent =  layout.getParent();
+                    if (parent != null) {
+                        //change parent to show background correctly on scale
+                        RelativeLayout rlout = new RelativeLayout(context);
+                        ((ViewGroup) parent).removeView(layout);
+                        layout.setLayoutParams(new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                        ((ViewGroup) parent).addView(rlout); // change parent to new layout
+                        rlout.addView(layout);
+                        // create framelayout and add imageview to set background
+                        FrameLayout flayout = new FrameLayout(context);
+                        flayout.setLayoutParams(new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                        ImageView mLockScreenWallpaperImage = new ImageView(flayout.getContext());
+                        mLockScreenWallpaperImage.setScaleType(ScaleType.CENTER_CROP);
+                        flayout.addView(mLockScreenWallpaperImage, -1, -1);
+                        Context settingsContext = context.createPackageContext("com.android.settings", 0);
+                        String wallpaperFile = settingsContext.getFilesDir() + "/lockwallpaper";
+                        Bitmap background = BitmapFactory.decodeFile(wallpaperFile);
+                        Drawable d = new BitmapDrawable(context.getResources(), background);
+                        mLockScreenWallpaperImage.setImageDrawable(d);
+                        // add background to lock screen.
+                        rlout.addView(flayout,0);
+                    }
+                } catch (NameNotFoundException e) {
+                }
+            }
+        }
+    }
+
     private boolean isSilentMode() {
         return mAudioManager.getRingerMode() != AudioManager.RINGER_MODE_NORMAL;
     }
@@ -479,3 +569,4 @@ class LockScreen extends LinearLayout implements KeyguardScreen {
     public void onPhoneStateChanged(String newState) {
     }
 }
+

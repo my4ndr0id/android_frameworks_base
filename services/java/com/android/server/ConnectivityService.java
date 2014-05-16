@@ -416,13 +416,17 @@ public class ConnectivityService extends IConnectivityManager.Stub {
         }
 
         // setup our unique device name
-        if (TextUtils.isEmpty(SystemProperties.get("net.hostname"))) {
+        String hostname = Settings.Secure.getString(context.getContentResolver(),
+                Settings.Secure.DEVICE_HOSTNAME);
+        if (TextUtils.isEmpty(hostname) && TextUtils.isEmpty(SystemProperties.get("net.hostname"))) {
             String id = Settings.Secure.getString(context.getContentResolver(),
                     Settings.Secure.ANDROID_ID);
             if (id != null && id.length() > 0) {
                 String name = new String("android-").concat(id);
                 SystemProperties.set("net.hostname", name);
             }
+        } else {
+            SystemProperties.set("net.hostname", hostname);
         }
 
         // read our default dns server ip
@@ -3253,21 +3257,6 @@ private NetworkStateTracker makeWimaxStateTracker() {
         if (VDBG) log("requestQoS(aport)");
         if (mCneStarted == false) return false;
         return mLinkManager.requestQoS(id, localPort, localAddress);
-    }
-
-    public void updateBlockedUids(int uid, boolean isBlocked) {
-        try {
-            mAlarmMgrSvc = (AlarmManagerService)ServiceManager.getService(Context.ALARM_SERVICE);
-            mAlarmMgrSvc.updateBlockedUids(uid,isBlocked);
-        } catch (NullPointerException e) {
-            log("Could Not Update blocked Uids with alarmManager" + e);
-        }
-        try {
-            mPowerMgrSvc = (PowerManagerService)ServiceManager.getService(Context.POWER_SERVICE);
-            mPowerMgrSvc.updateBlockedUids(uid,isBlocked);
-        } catch (NullPointerException e) {
-            log("Could Not Update blocked Uids with powerManager" + e);
-        }
     }
 
     /**

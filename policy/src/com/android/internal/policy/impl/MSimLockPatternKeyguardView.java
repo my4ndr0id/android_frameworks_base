@@ -86,7 +86,6 @@ public class MSimLockPatternKeyguardView extends LockPatternKeyguardView impleme
         updateScreen(getInitialMode(), false);
     }
 
-    @Override
     protected void keyguardScreenCallback() {
         mKeyguardScreenCallback = new KeyguardScreenCallback() {
             public void goToLockScreen() {

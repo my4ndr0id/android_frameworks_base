@@ -64,7 +64,6 @@ import android.util.EventLog;
 import android.util.Log;
 import android.util.Slog;
 import android.view.WindowManagerPolicy;
-import com.android.internal.app.ActivityTrigger;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
@@ -287,8 +286,6 @@ final class ActivityStack {
     static final int DESTROY_TIMEOUT_MSG = 17;
     static final int RESUME_TOP_ACTIVITY_MSG = 19;
 
-    static final ActivityTrigger mActivityTrigger = new ActivityTrigger();
-
     final Handler mHandler = new Handler() {
         //public Handler() {
         //    if (localLOGV) Slog.v(TAG, "Handler started!");
@@ -310,11 +307,18 @@ final class ActivityStack {
                     // We don't at this point know if the activity is fullscreen,
                     // so we need to be conservative and assume it isn't.
                     Slog.w(TAG, "Activity pause timeout for " + r);
+                    int pid = -1;
+                    long pauseTime = 0;
+                    String m = null;
                     synchronized (mService) {
                         if (r.app != null) {
-                            mService.logAppTooSlow(r.app, r.pauseTime,
-                                    "pausing " + r);
+                            pid = r.app.pid;
                         }
+                        pauseTime = r.pauseTime;
+                        m = "pausing " + r;
+                    }
+                    if (pid > 0) {
+                        mService.logAppTooSlow(pid, pauseTime, m);
                     }
 
                     activityPaused(r != null ? r.appToken : null, true);
@@ -335,11 +339,20 @@ final class ActivityStack {
                 } break;
                 case LAUNCH_TICK_MSG: {
                     ActivityRecord r = (ActivityRecord)msg.obj;
+                    int pid = -1;
+                    long launchTickTime = 0;
+                    String m = null;
                     synchronized (mService) {
                         if (r.continueLaunchTickingLocked()) {
-                            mService.logAppTooSlow(r.app, r.launchTickTime,
-                                    "launching " + r);
+                            if (r.app != null) {
+                                pid = r.app.pid;
+                            }
+                            launchTickTime = r.launchTickTime;
+                            m = "launching " + r;
                         }
+                    }
+                    if (pid > 0) {
+                        mService.logAppTooSlow(pid, launchTickTime, m);
                     }
                 } break;
                 case DESTROY_TIMEOUT_MSG: {
@@ -1317,7 +1330,10 @@ final class ActivityStack {
         // If we are sleeping, and there is no resumed activity, and the top
         // activity is paused, well that is the state we want.
         if ((mService.mSleeping || mService.mShuttingDown)
-                && mLastPausedActivity == next && next.state == ActivityState.PAUSED) {
+                && mLastPausedActivity == next
+                && (next.state == ActivityState.PAUSED
+                    || next.state == ActivityState.STOPPED
+                    || next.state == ActivityState.STOPPING)) {
             // Make sure we have executed any pending transitions, since there
             // should be nothing left to do at this point.
             mService.mWindowManager.executeAppTransition();
@@ -1333,8 +1349,6 @@ final class ActivityStack {
         mWaitingVisibleActivities.remove(next);
 
         if (DEBUG_SWITCH) Slog.v(TAG, "Resuming " + next);
-
-        mActivityTrigger.activityResumeTrigger(next.intent);
 
         // If we are currently pausing an activity, then don't do anything
         // until that is done.
@@ -2278,7 +2292,6 @@ final class ActivityStack {
         if (err == START_SUCCESS) {
             Slog.i(TAG, "START {" + intent.toShortString(true, true, true) + "} from pid "
                     + (callerApp != null ? callerApp.pid : callingPid));
-            mActivityTrigger.activityStartTrigger(intent);
         }
 
         ActivityRecord sourceRecord = null;

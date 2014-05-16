@@ -278,12 +278,6 @@ final class Settings {
     }
 
     SharedUserSetting addSharedUserLPw(String name, int uid, int pkgFlags) {
-        return addSharedUserLPw(name, uid, pkgFlags, null);
-    }
-
-    // This version of addSharedUserLPw adds the ability to set additional group ids
-    // that should be granted to this shared user
-    SharedUserSetting addSharedUserLPw(String name, int uid, int pkgFlags, int []gids) {
         SharedUserSetting s = mSharedUsers.get(name);
         if (s != null) {
             if (s.userId == uid) {
@@ -295,9 +289,6 @@ final class Settings {
         }
         s = new SharedUserSetting(name, pkgFlags);
         s.userId = uid;
-        if (gids != null) {
-            s.gids = gids.clone();
-        }
         if (addUserIdLPw(uid, s, name)) {
             mSharedUsers.put(name, s);
             return s;
@@ -980,7 +971,7 @@ final class Settings {
 
                     // Avoid any application that has a space in its path
                     // or that is handled by the system.
-                    if (dataPath.indexOf(" ") >= 0 || ai.uid <= Process.FIRST_APPLICATION_UID)
+                    if (dataPath.indexOf(" ") >= 0 || ai.uid < Process.FIRST_APPLICATION_UID)
                         continue;
 
                     // we store on each line the following information for now:
@@ -2019,7 +2010,7 @@ final class Settings {
             if (pkgSetting.notLaunched) {
                 if (pkgSetting.installerPackageName != null) {
                     PackageManagerService.sendPackageBroadcast(Intent.ACTION_PACKAGE_FIRST_LAUNCH,
-                            pkgSetting.name, null,
+                            pkgSetting.name, null, null,
                             pkgSetting.installerPackageName, null);
                 }
                 pkgSetting.notLaunched = false;

@@ -51,10 +51,14 @@ import android.util.Log;
 class CpuGovernorService {
     private final String TAG = "CpuGovernorService";
     private Context mContext;
+
+    private final boolean DBG = false;
+    private final boolean mUseIOBusyFeature = true;
+
     private SamplingRateChangeProcessor mSamplingRateChangeProcessor =
         new SamplingRateChangeProcessor();
-    private IOBusyVoteProcessor mIOBusyVoteChangeProcessor =
-        new IOBusyVoteProcessor();
+
+    private IOBusyVoteProcessor mIOBusyVoteChangeProcessor = null;
 
     public CpuGovernorService(Context context) {
         mContext = context;
@@ -62,12 +66,16 @@ class CpuGovernorService {
 
         intentFilter.addAction(Intent.ACTION_SCREEN_ON);
         intentFilter.addAction(Intent.ACTION_SCREEN_OFF);
-        intentFilter.addAction(IOBusyVoteProcessor.ACTION_IOBUSY_VOTE);
-        intentFilter.addAction(IOBusyVoteProcessor.ACTION_IOBUSY_UNVOTE);
-        intentFilter.addAction(IOBusyVoteProcessor.ACTION_DOWN_FACTOR_DECREASE);
-        intentFilter.addAction(IOBusyVoteProcessor.ACTION_DOWN_FACTOR_RESTORE);
         new Thread(mSamplingRateChangeProcessor).start();
-        new Thread(mIOBusyVoteChangeProcessor).start();
+
+        if (mUseIOBusyFeature) {
+            // IOBusy feature requires kernel >= 2.6.35
+            intentFilter.addAction(IOBusyVoteProcessor.ACTION_IOBUSY_VOTE);
+            intentFilter.addAction(IOBusyVoteProcessor.ACTION_IOBUSY_UNVOTE);
+
+            mIOBusyVoteChangeProcessor = new IOBusyVoteProcessor();
+            new Thread(mIOBusyVoteChangeProcessor).start();
+        }
         mContext.registerReceiver(mReceiver, intentFilter);
     }
 
@@ -76,7 +84,7 @@ class CpuGovernorService {
         public void onReceive(Context context, Intent intent) {
             boolean changeAdded = false;
 
-            Log.i(TAG, "intent action: " + intent.getAction());
+            if (DBG) Log.d(TAG, "intent action: " + intent.getAction());
 
             if (intent.getAction().equals(Intent.ACTION_SCREEN_ON)) {
                 if (SystemProperties.getInt("dev.pm.dyn_samplingrate", 0) != 0) {
@@ -158,40 +166,6 @@ class CpuGovernorService {
                     mIOBusyVoteChangeProcessor.getSynchObject().notify();
                     mIOBusyVoteChangeProcessor.setNotificationPending(true);
                 }
-            } else if (intent.getAction().equals(IOBusyVoteProcessor.ACTION_DOWN_FACTOR_DECREASE)) {
-                Log.i(TAG, "sampling_down_factore reduced to 1");
-
-                while (!changeAdded) {
-                    try {
-                            mIOBusyVoteChangeProcessor.getIOBusyChangeRequests().
-                                add(IOBusyVoteProcessor.DOWN_FACTOR_DECREASE);
-                        changeAdded = true;
-                    } catch (ConcurrentModificationException concurrentModificationException) {
-                        // Ignore and try again.
-                    }
-                }
-
-                synchronized (mIOBusyVoteChangeProcessor.getSynchObject()) {
-                    mIOBusyVoteChangeProcessor.getSynchObject().notify();
-                    mIOBusyVoteChangeProcessor.setNotificationPending(true);
-                }
-            } else if (intent.getAction().equals(IOBusyVoteProcessor.ACTION_DOWN_FACTOR_RESTORE)) {
-                Log.i(TAG, "sampling_down_factore restored ");
-
-                while (!changeAdded) {
-                    try {
-                            mIOBusyVoteChangeProcessor.getIOBusyChangeRequests().
-                                add(IOBusyVoteProcessor.DOWN_FACTOR_RESTORE);
-                        changeAdded = true;
-                    } catch (ConcurrentModificationException concurrentModificationException) {
-                        // Ignore and try again.
-                    }
-                }
-
-                synchronized (mIOBusyVoteChangeProcessor.getSynchObject()) {
-                    mIOBusyVoteChangeProcessor.getSynchObject().notify();
-                    mIOBusyVoteChangeProcessor.setNotificationPending(true);
-                }
             }
         }
     };
@@ -201,31 +175,23 @@ class IOBusyVoteProcessor implements Runnable {
     private final String TAG = "IOBusyVoteProcessor";
     private static final String IO_IS_BUSY_FILE_PATH =
         "/sys/devices/system/cpu/cpufreq/ondemand/io_is_busy";
-    private static final String DOWN_FACTOR_FILE_PATH =
-	"/sys/devices/system/cpu/cpufreq/ondemand/sampling_down_factor";
-    private final int MAX_ONDEMAND_VALUE_LENGTH = 32;
+    private final int MAX_IO_IS_BUSY_VALUE_LENGTH = 32;
     private boolean mNotificationPending = false;
     private Vector<Integer> mIOBusyChanges = new Vector<Integer>();
     private Object mSynchIOBusyChanges = new Object();
     private int mSavedIOBusyValue = -1;
     private int mCurrentIOBusyValue = -1;
-    private int mSavedDownFactorValue = -1;
-    private int mCurrentDownFactorValue = -1;
     private int mOnVotes = 0;
     private int mOffVotes = 0;
-    private int mDownFactorDecreaseVotes = 0;
     private boolean mError = false;
 
     public static final int IO_IS_BUSY_VOTE_ON = 1;
     public static final int IO_IS_BUSY_VOTE_OFF = 2;
     public static final int IO_IS_BUSY_UNVOTE_ON = 3;
     public static final int IO_IS_BUSY_UNVOTE_OFF = 4;
-    public static final int DOWN_FACTOR_RESTORE = 5;
-    public static final int DOWN_FACTOR_DECREASE = 6;
     public static final String ACTION_IOBUSY_VOTE = "com.android.server.CpuGovernorService.action.IOBUSY_VOTE";
     public static final String ACTION_IOBUSY_UNVOTE = "com.android.server.CpuGovernorService.action.IOBUSY_UNVOTE";
-    public static final String ACTION_DOWN_FACTOR_DECREASE = "com.android.server.CpuGovernorService.action.DOWN_FACTOR_DECREASE";
-    public static final String ACTION_DOWN_FACTOR_RESTORE = "com.android.server.CpuGovernorService.action.DOWN_FACTOR_RESTORE";
+
     public void setNotificationPending(boolean notificationPending) {
         mNotificationPending = notificationPending;
     }
@@ -243,10 +209,8 @@ class IOBusyVoteProcessor implements Runnable {
     }
 
     public void initializeIOBusyValue() {
-        mSavedIOBusyValue = readOndemandFile(IO_IS_BUSY_FILE_PATH);
+        mSavedIOBusyValue = getCurrentIOBusyValue();
         mCurrentIOBusyValue = mSavedIOBusyValue;
-        mSavedDownFactorValue = readOndemandFile(DOWN_FACTOR_FILE_PATH);
-        mCurrentDownFactorValue = mSavedDownFactorValue;
     }
 
     public void run() {
@@ -266,7 +230,7 @@ class IOBusyVoteProcessor implements Runnable {
                 try{
                     int ioBusyChangeRequestType = mIOBusyChanges.remove(0);
 
-                    if (mOnVotes == 0 && mOffVotes == 0 && mDownFactorDecreaseVotes == 0) {
+                    if (mOnVotes == 0 && mOffVotes == 0) {
                         // There are no votes in the system. This is a good time
                         // to set the saved io_is_busy value.
                         initializeIOBusyValue();
@@ -284,10 +248,6 @@ class IOBusyVoteProcessor implements Runnable {
                         unvoteOn();
                     } else if (ioBusyChangeRequestType == IO_IS_BUSY_UNVOTE_OFF) {
                         unvoteOff();
-                    } else if (ioBusyChangeRequestType == DOWN_FACTOR_RESTORE) {
-                        downFactorRestore();
-                    } else if (ioBusyChangeRequestType == DOWN_FACTOR_DECREASE) {
-                        downFactorDecrease();
                     }
                 } catch (ConcurrentModificationException concurrentModificationException) {
                     // Ignore and make the thread try again.
@@ -296,27 +256,9 @@ class IOBusyVoteProcessor implements Runnable {
         }
     }
 
-    private void downFactorDecrease() {
-        mCurrentDownFactorValue = 1;
-        setOndemandValue(DOWN_FACTOR_FILE_PATH,mCurrentDownFactorValue);
-        mDownFactorDecreaseVotes++;
-    }
-
-    private void downFactorRestore() {
-        if (mDownFactorDecreaseVotes == 0) {
-            Log.e(TAG, "Down Factor votes can't be negative.");
-            return;
-        }
-        mDownFactorDecreaseVotes--;
-        if (mDownFactorDecreaseVotes == 0) {
-            mCurrentDownFactorValue = mSavedDownFactorValue;
-            setOndemandValue(DOWN_FACTOR_FILE_PATH,mCurrentDownFactorValue);
-        }
-    }
-
     private void voteOn() {
         mCurrentIOBusyValue = 1;
-        setOndemandValue(IO_IS_BUSY_FILE_PATH,mCurrentIOBusyValue);
+        setIOBusyValue(mCurrentIOBusyValue);
         mOnVotes++;
     }
 
@@ -336,10 +278,10 @@ class IOBusyVoteProcessor implements Runnable {
             // io_is_busy off.
             if (mOffVotes == 0) {
                 mCurrentIOBusyValue = mSavedIOBusyValue;
-                setOndemandValue(IO_IS_BUSY_FILE_PATH,mCurrentIOBusyValue);
+                setIOBusyValue(mCurrentIOBusyValue);
             } else if (mOffVotes > 0) {
                 mCurrentIOBusyValue = 0;
-                setOndemandValue(IO_IS_BUSY_FILE_PATH,mCurrentIOBusyValue);
+                setIOBusyValue(mCurrentIOBusyValue);
             } else {
                 mError = true;
 
@@ -351,7 +293,7 @@ class IOBusyVoteProcessor implements Runnable {
     private void voteOff() {
         if (mOnVotes == 0) {
             mCurrentIOBusyValue = 0;
-            setOndemandValue(IO_IS_BUSY_FILE_PATH,mCurrentIOBusyValue);
+            setIOBusyValue(mCurrentIOBusyValue);
         }
 
         mOffVotes++;
@@ -368,70 +310,71 @@ class IOBusyVoteProcessor implements Runnable {
 
         if (mOffVotes == 0 && mOnVotes == 0) {
             mCurrentIOBusyValue = mSavedIOBusyValue;
-            setOndemandValue(IO_IS_BUSY_FILE_PATH,mCurrentIOBusyValue);
+            setIOBusyValue(mCurrentIOBusyValue);
         }
     }
 
     /*
-     * Set the passed in ondemandValue as the current
-     * value to the file specified in filePath
+     * Set the passed in ioBusyValue as the current
+     * value of io_is_busy.
      */
-    private void setOndemandValue(String filePath, int ondemandValue) {
-        File fileOndemand = new File(filePath);
+    private void setIOBusyValue(int ioBusyValue) {
+        File fileIOBusy = new File(IO_IS_BUSY_FILE_PATH);
 
-        if (fileOndemand.canWrite()) {
+        if (fileIOBusy.canWrite()) {
             try {
-                PrintWriter ondemandWriter = new PrintWriter(fileOndemand);
-                ondemandWriter.print(ondemandValue + "");
-                ondemandWriter.close();
-                Log.i(TAG, "Set " + filePath +  " to " + ondemandValue);
+                PrintWriter ioBusyValueWriter = new PrintWriter(fileIOBusy);
+                ioBusyValueWriter.print(ioBusyValue + "");
+                ioBusyValueWriter.close();
+                Log.i(TAG, "Set io_is_busy to " + ioBusyValue);
             } catch (Exception exception) {
                 mError = true;
 
-                Log.e(TAG, "Unable to write to " + filePath);
+                Log.e(TAG, "Unable to write to io_is_busy.");
             }
         } else {
             mError = true;
 
-            Log.e(TAG, filePath + " cannot be written to.");
+            Log.e(TAG, "io_is_busy cannot be written to.");
         }
     }
+
     /*
-     * Get the current value by reading the file in filePath
+     * Get the current io_is_busy value by reading the file.
      */
-    private int readOndemandFile( String filePath) {
-        File fileOndemand = new File(filePath);
-        int ondemandValue = -1;
+    private int getCurrentIOBusyValue() {
+        File fileIOBusy = new File(IO_IS_BUSY_FILE_PATH);
+        int ioBusyValue = -1;
 
-        if (fileOndemand.canRead()) {
+        if (fileIOBusy.canRead()) {
             try {
-                BufferedReader ondemandValueReader = new BufferedReader(
-                        new FileReader(fileOndemand));
-                char[] ondemandContents = new char[MAX_ONDEMAND_VALUE_LENGTH];
+                BufferedReader ioBusyValueReader = new BufferedReader(
+                        new FileReader(fileIOBusy));
+                char[] ioBusyContents = new char[MAX_IO_IS_BUSY_VALUE_LENGTH];
 
-                ondemandValueReader.read(ondemandContents, 0,
-                        MAX_ONDEMAND_VALUE_LENGTH - 1);
-                ondemandValueReader.close();
+                ioBusyValueReader.read(ioBusyContents, 0,
+                        MAX_IO_IS_BUSY_VALUE_LENGTH - 1);
+                ioBusyValueReader.close();
 
                 try {
-                    ondemandValue = Integer.parseInt((new String(ondemandContents)).trim());
+                    ioBusyValue = Integer.parseInt((new String(ioBusyContents)).trim());
                 } catch (Exception exception) {
                     mError = true;
 
-                    Log.e(TAG, "Unable to read: " + filePath + " Contents: " + new String(ondemandContents));
+                    Log.e(TAG, "Unable to read io_is_busy. Contents: " + new String(ioBusyContents));
                 }
             } catch (Exception exception) {
                 mError = true;
 
-                Log.e(TAG, filePath + " cannot be read.");
+                Log.e(TAG, "io_is_busy cannot be read.");
             }
         } else {
             mError = true;
 
-            Log.e(TAG, filePath + " cannot be read.");
+            Log.e(TAG, "io_is_busy cannot be read.");
         }
 
-        return ondemandValue;
+        return ioBusyValue;
     }
 }
 

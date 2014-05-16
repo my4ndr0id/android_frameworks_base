@@ -21,11 +21,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.AudioManager;
 import android.os.Handler;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
 import android.os.UEventObserver;
+import android.provider.Settings;
 import android.util.Slog;
 import android.media.AudioManager;
 import android.util.Log;
@@ -40,6 +42,7 @@ class WiredAccessoryObserver extends UEventObserver {
     private static final String TAG = WiredAccessoryObserver.class.getSimpleName();
     private static final boolean LOG = true;
     private static final int MAX_AUDIO_PORTS = 3; /* h2w, USB Audio & hdmi */
+    private static final int MAX_AUDIO_PORTS_DOCK = 1;
     private static final String uEventInfo[][] = { {"DEVPATH=/devices/virtual/switch/h2w",
                                                     "/sys/class/switch/h2w/state",
                                                     "/sys/class/switch/h2w/name"},
@@ -49,6 +52,10 @@ class WiredAccessoryObserver extends UEventObserver {
                                                    {"DEVPATH=/devices/virtual/switch/hdmi",
                                                     "/sys/class/switch/hdmi/state",
                                                     "/sys/class/switch/hdmi/name"} };
+
+    private static final String uEventInfoDock[][] = { {"DEVPATH=/devices/virtual/switch/dock",
+                                                        "/sys/class/switch/dock/state",
+                                                        "/sys/class/switch/dock/name"} };
 
     private static final int BIT_HEADSET = (1 << 0);
     private static final int BIT_HEADSET_NO_MIC = (1 << 1);
@@ -67,6 +74,8 @@ class WiredAccessoryObserver extends UEventObserver {
     private static final int HEADSETS_WITH_MIC = BIT_HEADSET;
     private static final int ANC_HEADSETS_WITH_MIC = BIT_ANCHEADSET;
 
+    public static final String DOCK_AUDIO_SETTING_CHANGED = "DOCK_AUDIO_SETTING_CHANGED";
+
     private int mHeadsetState;
     private int mPrevHeadsetState;
     private String mHeadsetName;
@@ -80,6 +89,10 @@ class WiredAccessoryObserver extends UEventObserver {
         PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
         mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WiredAccessoryObserver");
         mWakeLock.setReferenceCounted(false);
+
+        final IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_BOOT_COMPLETED);
+        filter.addAction(DOCK_AUDIO_SETTING_CHANGED);
 
         context.registerReceiver(new BootCompletedReceiver(),
             new IntentFilter(Intent.ACTION_BOOT_COMPLETED), null, null);
@@ -112,6 +125,7 @@ class WiredAccessoryObserver extends UEventObserver {
 
     private synchronized final void updateState(String name, int state)
     {
+        if (LOG) Slog.v(TAG, "updateState name: " + name + " state " + state);
         if (name.equals("usb_audio")) {
            switchState = ((mHeadsetState & (BIT_HEADSET|BIT_HEADSET_NO_MIC|
                                             BIT_HEADSET_MIC_ONLY|
@@ -134,6 +148,7 @@ class WiredAccessoryObserver extends UEventObserver {
                                              BIT_USB_HEADSET_DGTL)) |
                            state);
         }
+        if (LOG) Slog.v(TAG, "updateState switchState: " + switchState);
         update(name, switchState);
     }
 

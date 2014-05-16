@@ -45,7 +45,7 @@ static fields_t fields;
 
 // ----------------------------------------------------------------------------
 
-void SurfaceTexture_setSurfaceTexture(JNIEnv* env, jobject thiz,
+static void SurfaceTexture_setSurfaceTexture(JNIEnv* env, jobject thiz,
         const sp<SurfaceTexture>& surfaceTexture)
 {
     SurfaceTexture* const p =
