@@ -748,7 +748,9 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
 
     protected void onConfigurationChanged(Configuration newConfig) {
         Resources resources = getResources();
-        mShowLockBeforeUnlock = resources.getBoolean(R.bool.config_enableLockBeforeUnlockScreen);
+        mShowLockBeforeUnlock = resources.getBoolean(R.bool.config_enableLockBeforeUnlockScreen) ||
+                        (Settings.Secure.getInt(mContext.getContentResolver(),
+                        Settings.Secure.LOCK_BEFORE_UNLOCK, 0) != 0);
         mConfiguration = newConfig;
         if (DEBUG_CONFIGURATION) Log.v(TAG, "**** re-creating lock screen since config changed");
         saveWidgetState();
@@ -863,7 +865,8 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
         boolean secure = false;
         switch (unlockMode) {
             case Pattern:
-                secure = mLockPatternUtils.isLockPatternEnabled();
+                secure = mLockPatternUtils.isLockPatternEnabled() &&
+                        mProfileManager.getActiveProfile().getScreenLockMode() != Profile.LockMode.INSECURE;
                 break;
             case SimPin:
                 secure = mUpdateMonitor.getSimState() == IccCard.State.PIN_REQUIRED;
@@ -875,7 +878,8 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
                 secure = true;
                 break;
             case Password:
-                secure = mLockPatternUtils.isLockPasswordEnabled();
+                secure = mLockPatternUtils.isLockPasswordEnabled() &&
+                        mProfileManager.getActiveProfile().getScreenLockMode() != Profile.LockMode.INSECURE;
                 break;
             default:
                 throw new IllegalStateException("unknown unlock mode " + unlockMode);
@@ -1095,7 +1099,7 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
     }
 
     private void showDialog(String title, String message) {
-        final AlertDialog dialog = new AlertDialog.Builder(mContext)
+        final AlertDialog dialog = new AlertDialog.Builder(getUiContext())
             .setTitle(title)
             .setMessage(message)
             .setNeutralButton(R.string.ok, null)
