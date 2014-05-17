@@ -678,6 +678,7 @@ static Layer* android_view_GLES20Canvas_createTextureLayer(JNIEnv* env, jobject 
     Layer* layer = LayerRenderer::createTextureLayer(isOpaque, storage[0]);
 
     if (layer) {
+        jint* storage = env->GetIntArrayElements(layerInfo, NULL);
         storage[0] = layer->getTexture();
         env->ReleaseIntArrayElements(layerInfo, storage, 0);
     }
@@ -707,12 +708,6 @@ static void android_view_GLES20Canvas_resizeLayer(JNIEnv* env, jobject clazz,
     storage[0] = layer->getWidth();
     storage[1] = layer->getHeight();
     env->ReleaseIntArrayElements(layerInfo, storage, 0);
-}
-
-static void android_view_GLES20Canvas_setSurfaceTexture(JNIEnv* env, jobject clazz,
-    jobject surface) {
-    sp<SurfaceTexture> surfaceTexture(SurfaceTexture_getSurfaceTexture(env, surface));
-    SurfaceTexture_setSurfaceTexture(env, surface, surfaceTexture);
 }
 
 static void android_view_GLES20Canvas_updateTextureLayer(JNIEnv* env, jobject clazz,
@@ -889,8 +884,6 @@ static JNINativeMethod gMethods[] = {
     { "nCreateLayer",            "(IIZ[I)I",   (void*) android_view_GLES20Canvas_createLayer },
     { "nResizeLayer",            "(III[I)V" ,  (void*) android_view_GLES20Canvas_resizeLayer },
     { "nCreateTextureLayer",     "(Z[I)I",     (void*) android_view_GLES20Canvas_createTextureLayer },
-    { "nSetSurfaceTexture",      "(Landroid/graphics/SurfaceTexture;)V",
-                                               (void*) android_view_GLES20Canvas_setSurfaceTexture },
     { "nUpdateTextureLayer",     "(IIIZLandroid/graphics/SurfaceTexture;)V",
                                                (void*) android_view_GLES20Canvas_updateTextureLayer },
     { "nSetTextureLayerTransform", "(II)V",    (void*) android_view_GLES20Canvas_setTextureLayerTransform },

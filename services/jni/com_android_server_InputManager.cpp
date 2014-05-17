@@ -188,6 +188,8 @@ public:
     void setSystemUiVisibility(int32_t visibility);
     void setPointerSpeed(int32_t speed);
     void setShowTouches(bool enabled);
+    void setKeyLayout(const char* deviceName, const char* keyLayout);
+    void setStylusIconEnabled(bool enabled);
 
     /* --- InputReaderPolicyInterface implementation --- */
 
@@ -246,6 +248,9 @@ private:
         // Show touches feature enable/disable.
         bool showTouches;
 
+        // Show icon when stylus is used
+        bool stylusIconEnabled;
+
         // Sprite controller singleton, created on first use.
         sp<SpriteController> spriteController;
 
@@ -290,6 +295,7 @@ NativeInputManager::NativeInputManager(jobject contextObj,
         mLocked.pointerSpeed = 0;
         mLocked.pointerGesturesEnabled = true;
         mLocked.showTouches = false;
+        mLocked.stylusIconEnabled = false;
     }
 
     sp<EventHub> eventHub = new EventHub();
@@ -446,6 +452,8 @@ void NativeInputManager::getReaderConfiguration(InputReaderConfiguration* outCon
         outConfig->pointerGesturesEnabled = mLocked.pointerGesturesEnabled;
 
         outConfig->showTouches = mLocked.showTouches;
+
+        outConfig->stylusIconEnabled = mLocked.stylusIconEnabled;
 
         outConfig->setDisplayInfo(0, false /*external*/,
                 mLocked.displayWidth, mLocked.displayHeight, mLocked.displayOrientation);
@@ -719,6 +727,28 @@ void NativeInputManager::setShowTouches(bool enabled) {
 
     mInputManager->getReader()->requestRefreshConfiguration(
             InputReaderConfiguration::CHANGE_SHOW_TOUCHES);
+}
+
+void NativeInputManager::setStylusIconEnabled(bool enabled) {
+    { // acquire lock
+        AutoMutex _l(mLock);
+
+        if (mLocked.stylusIconEnabled == enabled) {
+            return;
+        }
+
+        LOGI("Setting stylus icon enabled to %s.", enabled ? "enabled" : "disabled");
+        mLocked.stylusIconEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader()->requestRefreshConfiguration(
+            InputReaderConfiguration::CHANGE_STYLUS_ICON_ENABLED);
+}
+
+void NativeInputManager::setKeyLayout(const char* deviceName, const char* keyLayout) {
+    mInputManager->getReader()->setKeyLayout(deviceName, keyLayout);
+    mInputManager->getReader()->requestRefreshConfiguration(
+            InputReaderConfiguration::CHANGE_MUST_REOPEN);
 }
 
 bool NativeInputManager::isScreenOn() {
@@ -1355,6 +1385,29 @@ static void android_server_InputManager_nativeMonitor(JNIEnv* env, jclass clazz)
     gNativeInputManager->getInputManager()->getDispatcher()->monitor();
 }
 
+static void android_server_InputManager_nativeSetKeyLayout(JNIEnv* env,
+        jclass clazz, jstring deviceName, jstring keyLayout) {
+    if (checkInputManagerUnitialized(env)) {
+        return;
+    }
+
+    const char *cDeviceName = env->GetStringUTFChars(deviceName, NULL);
+    const char *cKeyLayout = env->GetStringUTFChars(keyLayout, NULL);
+
+    gNativeInputManager->setKeyLayout(cDeviceName, cKeyLayout);
+
+    env->ReleaseStringUTFChars(deviceName, cDeviceName);
+    env->ReleaseStringUTFChars(keyLayout, cKeyLayout);
+}
+
+static void android_server_InputManager_nativeSetStylusIconEnabled(JNIEnv* env,
+        jclass clazz, jboolean enabled) {
+    if (checkInputManagerUnitialized(env)) {
+        return;
+    }
+
+    gNativeInputManager->setStylusIconEnabled(enabled);
+}
 // ----------------------------------------------------------------------------
 
 static JNINativeMethod gInputManagerMethods[] = {
@@ -1409,6 +1462,10 @@ static JNINativeMethod gInputManagerMethods[] = {
             (void*) android_server_InputManager_nativeDump },
     { "nativeMonitor", "()V",
             (void*) android_server_InputManager_nativeMonitor },
+    { "nativeSetKeyLayout", "(Ljava/lang/String;Ljava/lang/String;)V",
+            (void*) android_server_InputManager_nativeSetKeyLayout },
+    { "nativeSetStylusIconEnabled", "(Z)V",
+            (void*) android_server_InputManager_nativeSetStylusIconEnabled },
 };
 
 #define FIND_CLASS(var, className) \

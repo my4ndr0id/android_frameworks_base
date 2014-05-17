@@ -22,6 +22,10 @@ package com.android.internal.policy.impl;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
+import android.app.Profile;
+import android.app.ProfileManager;
+import android.app.StatusBarManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -50,6 +54,8 @@ import com.android.internal.telephony.TelephonyProperties;
 import com.google.android.collect.Lists;
 import com.android.internal.app.SuspendThread;
 
+import com.android.internal.app.ThemeUtils;
+
 import java.util.ArrayList;
 import java.util.UUID;
 
@@ -75,6 +81,7 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
     private static final boolean SHOW_SILENT_TOGGLE = true;
 
     private final Context mContext;
+    private Context mUiContext;
     private final AudioManager mAudioManager;
 
     private ArrayList<Action> mItems;
@@ -90,6 +97,8 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
     private ToggleAction.State mAirplaneState = ToggleAction.State.Off;
     private boolean mIsWaitingForEcmExit = false;
 
+    private Profile mChosenProfile;
+
     /**
      * @param context everything needs a context :(
      */
@@ -104,6 +113,8 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
         filter.addAction(TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED);
         context.registerReceiver(mBroadcastReceiver, filter);
 
+        ThemeUtils.registerThemeChangeReceiver(context, mThemeChangeReceiver);
+
         // get notified of phone state changes
         TelephonyManager telephonyManager =
                 (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
@@ -117,6 +128,10 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
     public void showDialog(boolean keyguardShowing, boolean isDeviceProvisioned) {
         mKeyguardShowing = keyguardShowing;
         mDeviceProvisioned = isDeviceProvisioned;
+        if (mDialog != null && mUiContext == null) {
+            mDialog.dismiss();
+            mDialog = null;
+        }
         if (mDialog == null) {
             mDialog = createDialog();
         }
@@ -124,6 +139,13 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
         mDialog.show();
         mDialog.getWindow().getDecorView().setSystemUiVisibility(View.STATUS_BAR_DISABLE_EXPAND);
+    }
+
+    private Context getUiContext() {
+        if (mUiContext == null) {
+            mUiContext = ThemeUtils.createUiContext(mContext);
+        }
+        return mUiContext != null ? mUiContext : mContext;
     }
 
     /**
@@ -183,7 +205,7 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
                 public void onPress() {
                     // shutdown by making sure radio and power are handled accordingly.
-                    ShutdownThread.shutdown(mContext, true);
+                    ShutdownThread.shutdown(getUiContext(), true);
                 }
 
                 public boolean showDuringKeyguard() {
@@ -199,7 +221,7 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
         mItems.add(
             new SinglePressAction(com.android.internal.R.drawable.ic_lock_reboot, R.string.global_action_reboot) {
                 public void onPress() {
-                    ShutdownThread.reboot(mContext, "null", true);
+                    ShutdownThread.reboot(getUiContext(), "null", true);
                 }
 
                 public boolean showDuringKeyguard() {
@@ -208,6 +230,22 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
                 public boolean showBeforeProvisioning() {
                     return true;
+                }
+            });
+
+        // next: profile
+        mItems.add(
+            new ProfileChooseAction() {
+                public void onPress() {
+                    createProfileDialog();
+                }
+
+                public boolean showDuringKeyguard() {
+                    return false;
+                }
+
+                public boolean showBeforeProvisioning() {
+                    return false;
                 }
             });
 
@@ -238,7 +276,7 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
         mAdapter = new MyAdapter();
 
-        final AlertDialog.Builder ab = new AlertDialog.Builder(mContext);
+        final AlertDialog.Builder ab = new AlertDialog.Builder(getUiContext());
 
         ab.setAdapter(mAdapter, this)
                 .setInverseBackgroundForced(true);
@@ -251,6 +289,52 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
         return dialog;
     }
+
+    private void createProfileDialog(){
+        final ProfileManager profileManager = (ProfileManager)mContext.getSystemService(Context.PROFILE_SERVICE);
+
+        final Profile[] profiles = profileManager.getProfiles();
+        UUID activeProfile = profileManager.getActiveProfile().getUuid();
+        final CharSequence[] names = new CharSequence[profiles.length];
+
+        int i=0;
+        int checkedItem = 0;
+
+        for(Profile profile : profiles) {
+            if(profile.getUuid().equals(activeProfile)) {
+                checkedItem = i;
+                mChosenProfile = profile;
+            }
+            names[i++] = profile.getName();
+        }
+
+        final AlertDialog.Builder ab = new AlertDialog.Builder(getUiContext());
+
+        AlertDialog dialog = ab
+                .setTitle(R.string.global_action_choose_profile)
+                .setSingleChoiceItems(names, checkedItem, new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface dialog, int which) {
+                        if (which < 0)
+                            return;
+                        mChosenProfile = profiles[which];
+                    }
+                })
+                .setPositiveButton(com.android.internal.R.string.yes,
+                        new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                profileManager.setActiveProfile(mChosenProfile.getUuid());
+                            }
+                        })
+                .setNegativeButton(com.android.internal.R.string.no,
+                        new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                dialog.cancel();
+                            }
+                }).create();
+        dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG);
+        dialog.show();
+    }
+
     /**
      * functions needed for taking screenhots.  
      * This leverages the built in ICS screenshot functionality 
@@ -434,7 +518,8 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
         public View getView(int position, View convertView, ViewGroup parent) {
             Action action = getItem(position);
-            return action.create(mContext, convertView, parent, LayoutInflater.from(mContext));
+            final Context context = getUiContext();
+            return action.create(context, convertView, parent, LayoutInflater.from(context));
         }
     }
 
@@ -497,6 +582,42 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
 
             icon.setImageDrawable(context.getResources().getDrawable(mIconResId));
             messageView.setText(mMessageResId);
+
+            return v;
+        }
+    }
+
+    /**
+     * A single press action maintains no state, just responds to a press
+     * and takes an action.
+     */
+    private abstract class ProfileChooseAction implements Action {
+        private ProfileManager mProfileManager;
+
+        protected ProfileChooseAction() {
+            mProfileManager = (ProfileManager)mContext.getSystemService(Context.PROFILE_SERVICE);
+        }
+
+        public boolean isEnabled() {
+            return true;
+        }
+
+        abstract public void onPress();
+
+        public View create(
+                Context context, View convertView, ViewGroup parent, LayoutInflater inflater) {
+            View v = (convertView != null) ?
+                    convertView :
+                    inflater.inflate(R.layout.global_actions_item, parent, false);
+
+            ImageView icon = (ImageView) v.findViewById(R.id.icon);
+            TextView messageView = (TextView) v.findViewById(R.id.message);
+            TextView statusView = (TextView) v.findViewById(R.id.status);
+            statusView.setVisibility(View.VISIBLE);
+            statusView.setText(mProfileManager.getActiveProfile().getName());
+
+            icon.setImageDrawable(context.getResources().getDrawable(com.android.internal.R.drawable.ic_lock_profile));
+            messageView.setText(R.string.global_action_choose_profile);
 
             return v;
         }
@@ -709,6 +830,12 @@ class GlobalActions implements DialogInterface.OnDismissListener, DialogInterfac
                     changeAirplaneModeSystemSetting(true);
                 }
             }
+        }
+    };
+
+    private BroadcastReceiver mThemeChangeReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            mUiContext = null;
         }
     };
 

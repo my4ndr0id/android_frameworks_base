@@ -303,6 +303,8 @@ public class WindowManagerService extends IWindowManager.Stub
 
     final boolean mLimitedAlphaCompositing;
 
+    final boolean mSetLandscapeProperty;
+
     final WindowManagerPolicy mPolicy = PolicyManager.makeNewWindowManager();
 
     final IActivityManager mActivityManager;
@@ -564,6 +566,8 @@ public class WindowManagerService extends IWindowManager.Stub
 
     final InputManager mInputManager;
 
+    private boolean mForceDisableHardwareKeyboard = false;
+
     // Who is holding the screen on.
     Session mHoldingScreenOn;
     PowerManager.WakeLock mHoldingScreenWakeLock;
@@ -753,6 +757,8 @@ public class WindowManagerService extends IWindowManager.Stub
         mAllowBootMessages = showBootMsgs;
         mLimitedAlphaCompositing = context.getResources().getBoolean(
                 com.android.internal.R.bool.config_sf_limitedAlpha);
+        mSetLandscapeProperty = context.getResources().getBoolean(
+                com.android.internal.R.bool.config_setLandscapeProp);
 
         mPowerManager = pm;
         mPowerManager.setPolicy(mPolicy);
@@ -780,6 +786,9 @@ public class WindowManagerService extends IWindowManager.Stub
         mHoldingScreenWakeLock.setReferenceCounted(false);
 
         mInputManager = new InputManager(context, this);
+
+        mForceDisableHardwareKeyboard = context.getResources().getBoolean(
+                com.android.internal.R.bool.config_forceDisableHardwareKeyboard);
 
         PolicyThread thr = new PolicyThread(mPolicy, this, context, pm);
         thr.start();
@@ -5045,6 +5054,11 @@ public class WindowManagerService extends IWindowManager.Stub
         SystemProperties.set(StrictMode.VISUAL_PROPERTY, value);
     }
 
+    public void setLandscapeProperty(String value) {
+        if (!mSetLandscapeProperty) return;
+        SystemProperties.set("sys.orientation.landscape", value);
+    }
+
     /**
      * Takes a snapshot of the screen.  In landscape mode this grabs the whole screen.
      * In portrait mode, it grabs the upper region of the screen based on the vertical dimension
@@ -5140,6 +5154,9 @@ public class WindowManagerService extends IWindowManager.Stub
 
             // The screenshot API does not apply the current screen rotation.
             rot = mDisplay.getRotation();
+            // Allow for abnormal hardware orientation
+            rot = (rot + (android.os.SystemProperties.getInt("ro.sf.hwrotation",0) / 90 )) % 4;
+
             int fw = frame.width();
             int fh = frame.height();
 
@@ -6053,36 +6070,12 @@ public class WindowManagerService extends IWindowManager.Stub
         final int dh = mCurDisplayHeight;
 
         int orientation = Configuration.ORIENTATION_SQUARE;
-
         if (dw < dh) {
             orientation = Configuration.ORIENTATION_PORTRAIT;
-            switch(mRotation)
-            {
-            case Surface.ROTATION_0:
-            case Surface.ROTATION_90:
-                config.altOrientation = Configuration.ORIENTATION_PORTRAIT;
-                break;
-            case Surface.ROTATION_180:
-            case Surface.ROTATION_270:
-                config.altOrientation = Configuration.ORIENTATION_REVERSE_PORTRAIT;
-                break;
-            }
-
+            setLandscapeProperty("0");
         } else if (dw > dh) {
             orientation = Configuration.ORIENTATION_LANDSCAPE;
-
-            switch(mRotation)
-            {
-            case Surface.ROTATION_0:
-            case Surface.ROTATION_90:
-                config.altOrientation = Configuration.ORIENTATION_LANDSCAPE;
-                break;
-            case Surface.ROTATION_180:
-            case Surface.ROTATION_270:
-                config.altOrientation = Configuration.ORIENTATION_REVERSE_LANDSCAPE;
-                break;
-            }
-
+            setLandscapeProperty("1");
         }
         config.orientation = orientation;
 
@@ -6116,76 +6109,11 @@ public class WindowManagerService extends IWindowManager.Stub
         config.compatScreenHeightDp = (int)(config.screenHeightDp / mCompatibleScreenScale);
         config.compatSmallestScreenWidthDp = computeCompatSmallestWidth(rotated, dm, dw, dh);
 
-        // Compute the screen layout size class.
-        int screenLayout;
-        int longSize = mAppDisplayWidth;
-        int shortSize = mAppDisplayHeight;
-        if (longSize < shortSize) {
-            int tmp = longSize;
-            longSize = shortSize;
-            shortSize = tmp;
-        }
-        longSize = (int)(longSize/dm.density);
-        shortSize = (int)(shortSize/dm.density);
-
-        // These semi-magic numbers define our compatibility modes for
-        // applications with different screens.  These are guarantees to
-        // app developers about the space they can expect for a particular
-        // configuration.  DO NOT CHANGE!
-        if (longSize < 470) {
-            // This is shorter than an HVGA normal density screen (which
-            // is 480 pixels on its long side).
-            screenLayout = Configuration.SCREENLAYOUT_SIZE_SMALL
-                    | Configuration.SCREENLAYOUT_LONG_NO;
-        } else {
-            // What size is this screen screen?
-            if (longSize >= 960 && shortSize >= 720) {
-                // 1.5xVGA or larger screens at medium density are the point
-                // at which we consider it to be an extra large screen.
-                screenLayout = Configuration.SCREENLAYOUT_SIZE_XLARGE;
-            } else if (longSize >= 640 && shortSize >= 480) {
-                // VGA or larger screens at medium density are the point
-                // at which we consider it to be a large screen.
-                screenLayout = Configuration.SCREENLAYOUT_SIZE_LARGE;
-            } else {
-                screenLayout = Configuration.SCREENLAYOUT_SIZE_NORMAL;
-            }
-
-            // Override system set screenLayout value with user defined.
-            // Ensure that screen size should not be over qualyfied.
-            String sl = SystemProperties.get("ro.screen.layout");
-            if (sl != null) {
-                if (sl.equals("small")) {
-                    screenLayout = Configuration.SCREENLAYOUT_SIZE_SMALL;
-                } else if (sl.equals("normal")
-                        && (screenLayout > Configuration.SCREENLAYOUT_SIZE_NORMAL)) {
-                    screenLayout = Configuration.SCREENLAYOUT_SIZE_NORMAL;
-                } else if (sl.equals("large")
-                        && (screenLayout > Configuration.SCREENLAYOUT_SIZE_LARGE)) {
-                    screenLayout = Configuration.SCREENLAYOUT_SIZE_LARGE;
-                }
-            }
-
-            // If this screen is wider than normal HVGA, or taller
-            // than FWVGA, then for old apps we want to run in size
-            // compatibility mode.
-            if (shortSize > 321 || longSize > 570) {
-                screenLayout |= Configuration.SCREENLAYOUT_COMPAT_NEEDED;
-            }
-
-            // Is this a long screen?
-            if (((longSize*3)/5) >= (shortSize-1)) {
-                // Anything wider than WVGA (5:3) is considering to be long.
-                screenLayout |= Configuration.SCREENLAYOUT_LONG_YES;
-            } else {
-                screenLayout |= Configuration.SCREENLAYOUT_LONG_NO;
-            }
-        }
-        config.screenLayout = screenLayout;
-        Log.i(TAG, "SCREENLAYOUT_SIZE (1:small, 2:normal, 3:large, 4:xlarge) " + (screenLayout & (Configuration.SCREENLAYOUT_SIZE_MASK)));
-
         // Determine whether a hard keyboard is available and enabled.
-        boolean hardKeyboardAvailable = config.keyboard == Configuration.KEYBOARD_NOKEYS;
+        boolean hardKeyboardAvailable = false;
+        if (!mForceDisableHardwareKeyboard) {
+            hardKeyboardAvailable = config.keyboard != Configuration.KEYBOARD_NOKEYS;
+        }
         if (hardKeyboardAvailable != mHardKeyboardAvailable) {
             mHardKeyboardAvailable = hardKeyboardAvailable;
             mHardKeyboardEnabled = hardKeyboardAvailable;

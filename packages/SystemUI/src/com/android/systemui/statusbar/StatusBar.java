@@ -25,6 +25,7 @@ import android.graphics.PixelFormat;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.provider.Settings;
 import android.util.Slog;
 import android.util.Log;
 import android.view.Display;
@@ -59,9 +60,16 @@ public abstract class StatusBar extends SystemUI implements CommandQueue.Callbac
 
     private DoNotDisturb mDoNotDisturb;
 
+    private boolean mShowNotificationCounts;
+
     public void start() {
         // First set up our views and stuff.
         View sb = makeStatusBarView();
+
+        mStatusBarContainer.addView(sb);
+
+        mShowNotificationCounts = Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.STATUS_BAR_NOTIF_COUNT, 0) == 1;
 
         // Connect in to the status bar manager service
         StatusBarIconList iconList = new StatusBarIconList();
@@ -128,14 +136,16 @@ public abstract class StatusBar extends SystemUI implements CommandQueue.Callbac
             = ((WindowManager)mContext.getSystemService(Context.WINDOW_SERVICE))
                 .getDefaultDisplay();
 
-        //enable hardware acceleration based on device
-        setHardwareAcceleration(lp);
+        // We explicitly leave FLAG_HARDWARE_ACCELERATED out of the flags.  The status bar occupies
+        // very little screen real-estate and is updated fairly frequently.  By using CPU rendering
+        // for the status bar, we prevent the GPU from having to wake up just to do these small
+        // updates, which should help keep power consumption down.
 
         lp.gravity = getStatusBarGravity();
         lp.setTitle("StatusBar");
         lp.packageName = mContext.getPackageName();
         lp.windowAnimations = R.style.Animation_StatusBar;
-        WindowManagerImpl.getDefault().addView(sb, lp);
+        WindowManagerImpl.getDefault().addView(mStatusBarContainer, lp);
 
         if (SPEW) {
             Slog.d(TAG, "Added status bar view: gravity=0x" + Integer.toHexString(lp.gravity) 
@@ -170,12 +180,5 @@ public abstract class StatusBar extends SystemUI implements CommandQueue.Callbac
             vetoButton.setVisibility(View.GONE);
         }
         return vetoButton;
-    }
-
-    protected void setHardwareAcceleration(WindowManager.LayoutParams lp) {
-        // We explicitly leave FLAG_HARDWARE_ACCELERATED out of the flags.  The status bar occupies
-        // very little screen real-estate and is updated fairly frequently.  By using CPU rendering
-        // for the status bar, we prevent the GPU from having to wake up just to do these small
-        // updates, which should help keep power consumption down.
     }
 }

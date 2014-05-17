@@ -21,6 +21,7 @@ import com.android.internal.R;
 import com.android.internal.policy.impl.LockPatternKeyguardView.UnlockMode;
 import com.android.internal.policy.IFaceLockCallback;
 import com.android.internal.policy.IFaceLockInterface;
+import com.android.internal.app.ThemeUtils;
 import com.android.internal.telephony.IccCard;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.internal.widget.LockScreenWidgetCallback;
@@ -34,7 +35,10 @@ import android.accounts.AccountManagerFuture;
 import android.accounts.AuthenticatorException;
 import android.accounts.OperationCanceledException;
 import android.app.AlertDialog;
+import android.app.Profile;
+import android.app.ProfileManager;
 import android.app.admin.DevicePolicyManager;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -57,6 +61,7 @@ import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.telephony.MSimTelephonyManager;
+import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
@@ -102,6 +107,8 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
 
     protected View mLockScreen;
     protected View mUnlockScreen;
+
+    private Context mUiContext;
 
     protected volatile boolean mScreenOn = false;
     private volatile boolean mWindowFocused = false;
@@ -150,6 +157,9 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
     //This resets when the phone is turned off with no current call
     protected boolean mHasOverlay;
 
+    // We can use the profile manager to override security
+    private ProfileManager mProfileManager;
+
 
     /**
      * Either a lock screen (an informational keyguard screen), or an unlock
@@ -196,6 +206,12 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
          */
         Unknown
     }
+
+    private BroadcastReceiver mThemeChangeReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            mUiContext = null;
+        }
+    };
 
     /**
      * The current mode.
@@ -311,22 +327,12 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
         mLockPatternUtils = lockPatternUtils;
         mWindowController = controller;
         mHasOverlay = false;
+        mProfileManager = (ProfileManager) context.getSystemService(Context.PROFILE_SERVICE);
 
         mUpdateMonitor.registerInfoCallback(this);
-        keyguardScreenCallback();
 
-        /**
-         * We'll get key events the current screen doesn't use. see
-         * {@link KeyguardViewBase#onKeyDown(int, android.view.KeyEvent)}
-         */
-        setFocusableInTouchMode(true);
-        setDescendantFocusability(FOCUS_AFTER_DESCENDANTS);
-
-        maybeEnableFallback(context);
-    }
-
-    protected void keyguardScreenCallback() {
         mKeyguardScreenCallback = new KeyguardScreenCallback() {
+
             public void goToLockScreen() {
                 mForgotPattern = false;
                 if (mIsVerifyUnlockOnly) {
@@ -482,7 +488,15 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
             }
         };
 
+        /**
+         * We'll get key events the current screen doesn't use. see
+         * {@link KeyguardViewBase#onKeyDown(int, android.view.KeyEvent)}
+         */
+        setFocusableInTouchMode(true);
+        setDescendantFocusability(FOCUS_AFTER_DESCENDANTS);
+
         updateScreen(getInitialMode(), false);
+        maybeEnableFallback(context);
     }
 
     private class AccountAnalyzer implements AccountManagerCallback<Bundle> {
@@ -712,6 +726,12 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
         addView(mUnlockScreen);
     }
 
+     @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        ThemeUtils.registerThemeChangeReceiver(mContext, mThemeChangeReceiver);
+    }
+
     @Override
     protected void onDetachedFromWindow() {
         removeCallbacks(mRecreateRunnable);
@@ -720,12 +740,17 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
         // e.g., when device becomes unlocked
         stopAndUnbindFromFaceLock();
 
+        mContext.unregisterReceiver(mThemeChangeReceiver);
+        mUiContext = null;
+
         super.onDetachedFromWindow();
     }
 
     protected void onConfigurationChanged(Configuration newConfig) {
         Resources resources = getResources();
-        mShowLockBeforeUnlock = resources.getBoolean(R.bool.config_enableLockBeforeUnlockScreen);
+        mShowLockBeforeUnlock = resources.getBoolean(R.bool.config_enableLockBeforeUnlockScreen) ||
+                        (Settings.Secure.getInt(mContext.getContentResolver(),
+                        Settings.Secure.LOCK_BEFORE_UNLOCK, 0) != 0);
         mConfiguration = newConfig;
         if (DEBUG_CONFIGURATION) Log.v(TAG, "**** re-creating lock screen since config changed");
         saveWidgetState();
@@ -840,7 +865,8 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
         boolean secure = false;
         switch (unlockMode) {
             case Pattern:
-                secure = mLockPatternUtils.isLockPatternEnabled();
+                secure = mLockPatternUtils.isLockPatternEnabled() &&
+                        mProfileManager.getActiveProfile().getScreenLockMode() != Profile.LockMode.INSECURE;
                 break;
             case SimPin:
                 secure = mUpdateMonitor.getSimState() == IccCard.State.PIN_REQUIRED;
@@ -852,7 +878,8 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
                 secure = true;
                 break;
             case Password:
-                secure = mLockPatternUtils.isLockPasswordEnabled();
+                secure = mLockPatternUtils.isLockPasswordEnabled() &&
+                        mProfileManager.getActiveProfile().getScreenLockMode() != Profile.LockMode.INSECURE;
                 break;
             default:
                 throw new IllegalStateException("unknown unlock mode " + unlockMode);
@@ -1018,6 +1045,11 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
      */
     private Mode getInitialMode() {
         final IccCard.State simState = mUpdateMonitor.getSimState();
+
+        mShowLockBeforeUnlock = mContext.getResources().getBoolean(R.bool.config_enableLockBeforeUnlockScreen) ||
+                        (Settings.Secure.getInt(mContext.getContentResolver(),
+                        Settings.Secure.LOCK_BEFORE_UNLOCK, 0) != 0);
+
         if (stuckOnLockScreenBecauseSimMissing() ||
                 (simState == IccCard.State.PUK_REQUIRED &&
                         !mLockPatternUtils.isPukUnlockScreenEnable())) {
@@ -1067,7 +1099,7 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
     }
 
     private void showDialog(String title, String message) {
-        final AlertDialog dialog = new AlertDialog.Builder(mContext)
+        final AlertDialog dialog = new AlertDialog.Builder(getUiContext())
             .setTitle(title)
             .setMessage(message)
             .setNeutralButton(R.string.ok, null)
@@ -1091,6 +1123,13 @@ public class LockPatternKeyguardView extends KeyguardViewBase implements Handler
                 timeoutInSeconds);
 
         showDialog(null, message);
+    }
+
+    private Context getUiContext() {
+        if (mUiContext == null) {
+            mUiContext = ThemeUtils.createUiContext(mContext);
+        }
+        return mUiContext != null ? mUiContext : mContext;
     }
 
     protected void showAlmostAtAccountLoginDialog() {

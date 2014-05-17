@@ -42,6 +42,7 @@ import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup.LayoutParams;
+import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -78,6 +79,7 @@ public class PasswordUnlockScreen extends LinearLayout implements KeyguardScreen
 
     private final KeyguardStatusViewManager mStatusViewManager;
     private final boolean mUseSystemIME = true; // TODO: Make configurable
+    private boolean mQuickUnlock;
     private boolean mResuming; // used to prevent poking the wakelock during onResume()
 
     // To avoid accidental lockout due to events while the device in in the pocket, ignore
@@ -173,6 +175,10 @@ public class PasswordUnlockScreen extends LinearLayout implements KeyguardScreen
                 mCallback.pokeWakelock();
             }
         });
+
+        mQuickUnlock = (Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.LOCKSCREEN_QUICK_UNLOCK_CONTROL, 0) == 1);
+
         mPasswordEntry.addTextChangedListener(new TextWatcher() {
             public void onTextChanged(CharSequence s, int start, int before, int count) {
             }
@@ -183,6 +189,15 @@ public class PasswordUnlockScreen extends LinearLayout implements KeyguardScreen
             public void afterTextChanged(Editable s) {
                 if (!mResuming) {
                     mCallback.pokeWakelock();
+                }
+                if (mQuickUnlock) {
+                    String entry = mPasswordEntry.getText().toString();
+                    if (entry.length() > MINIMUM_PASSWORD_LENGTH_BEFORE_REPORT &&
+                            mLockPatternUtils.checkPassword(entry)) {
+                            mCallback.keyguardDone(true);
+                            mCallback.reportSuccessfulUnlockAttempt();
+                            KeyStore.getInstance().password(entry);
+                    }
                 }
             }
         });
