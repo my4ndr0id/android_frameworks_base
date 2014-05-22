@@ -172,7 +172,7 @@ class PatternUnlockScreen extends LinearLayoutWithDefaultTouchRecepient
             Log.d(TAG, "landscape mode");
             inflater.inflate(R.layout.keyguard_screen_unlock_landscape, this, true);
         }
-
+        LockScreen.setBackground(context, (ViewGroup) findViewById(R.id.root));
         if (TelephonyManager.getDefault().isMultiSimEnabled()) {
             mKeyguardStatusViewManager = new MSimKeyguardStatusViewManager(this, mUpdateMonitor,
                     mLockPatternUtils, mCallback, true);

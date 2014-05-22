@@ -103,7 +103,7 @@ public class PasswordUnlockScreen extends LinearLayout implements KeyguardScreen
         } else {
             layoutInflater.inflate(R.layout.keyguard_screen_password_landscape, this, true);
         }
-
+        LockScreen.setBackground(context, (ViewGroup) findViewById(R.id.root));
         if (TelephonyManager.getDefault().isMultiSimEnabled()) {
             mStatusViewManager = new MSimKeyguardStatusViewManager(this, mUpdateMonitor,
                     mLockPatternUtils, mCallback, true);
