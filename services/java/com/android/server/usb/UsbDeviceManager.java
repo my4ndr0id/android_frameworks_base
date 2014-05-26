@@ -102,7 +102,6 @@ public class UsbDeviceManager {
     private final UsbSettingsManager mSettingsManager;
     private NotificationManager mNotificationManager;
     private final boolean mHasUsbAccessory;
-    private boolean mUseUsbNotification;
     private boolean mAdbEnabled;
     private Map<String, List<Pair<String, String>>> mOemModeMap;
 
@@ -187,8 +186,6 @@ public class UsbDeviceManager {
                 massStorageSupported = false;
             }
         }
-
-        mUseUsbNotification = !massStorageSupported;
 
         // make sure the ADB_ENABLED setting value matches the current state
         Settings.Secure.putInt(mContentResolver, Settings.Secure.ADB_ENABLED, mAdbEnabled ? 1 : 0);
@@ -563,7 +560,7 @@ public class UsbDeviceManager {
         }
 
         private void updateUsbNotification() {
-            if (mNotificationManager == null || !mUseUsbNotification) return;
+            if (mNotificationManager == null) return;
             int id = 0;
             Resources r = mContext.getResources();
             if (mConnected) {
