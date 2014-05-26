@@ -240,19 +240,6 @@ public class MSimTelephonyManager extends TelephonyManager {
         return getNetworkCountryIso(getDefaultSubscription());
     }
     /**
-     * Returns the ISO country code equivalent of the current registered
-     * operator's MCC (Mobile Country Code).
-     * <p>
-     * Availability: Only when user is registered to a network. Result may be
-     * unreliable on CDMA networks (use {@link #getPhoneType()} to determine if
-     * on a CDMA network).
-     */
-    public String getNetworkCountryIso(int subscription) {
-        return getTelephonyProperty(TelephonyProperties.PROPERTY_OPERATOR_ISO_COUNTRY,
-                subscription, "");
-    }
-
-    /**
      * Returns the ISO country code equivalent of a subscription's current registered
      * operator's MCC (Mobile Country Code).
      * <p>
