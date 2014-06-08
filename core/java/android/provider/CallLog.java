@@ -27,8 +27,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
 import android.provider.ContactsContract.DataUsageFeedback;
-import android.telephony.MSimTelephonyManager;
-import android.telephony.MSimSmsManager;
 import android.text.TextUtils;
 
 /**
@@ -247,9 +245,6 @@ public class CallLog {
          */
         public static final String CACHED_FORMATTED_NUMBER = "formatted_number";
 
-        /** @hide */
-        public static final String SUB_ID = "sub_id";
-
         /**
          * Adds a call to the call log.
          *
@@ -267,13 +262,6 @@ public class CallLog {
          */
         public static Uri addCall(CallerInfo ci, Context context, String number,
                 int presentation, int callType, long start, int duration) {
-            return addCall(ci, context, number, presentation, callType, start, duration,
-                    MSimTelephonyManager.getDefault().getPreferredVoiceSubscription());
-        }
-
-        /** {@hide} */
-        public static Uri addCall(CallerInfo ci, Context context, String number,
-                int presentation, int callType, long start, int duration, int subId) {
             final ContentResolver resolver = context.getContentResolver();
 
             // If this is a private number then set the number to Private, otherwise check
@@ -292,7 +280,6 @@ public class CallLog {
 
             ContentValues values = new ContentValues(5);
 
-            values.put(SUB_ID, subId);
             values.put(NUMBER, number);
             values.put(TYPE, Integer.valueOf(callType));
             values.put(DATE, Long.valueOf(start));
