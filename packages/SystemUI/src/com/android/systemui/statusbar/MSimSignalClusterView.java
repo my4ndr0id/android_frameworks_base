@@ -17,7 +17,11 @@
 
 package com.android.systemui.statusbar;
 
+import android.content.ContentResolver;
 import android.content.Context;
+import android.database.ContentObserver;
+import android.os.Handler;
+import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.AttributeSet;
 import android.util.Slog;
@@ -37,6 +41,8 @@ public class MSimSignalClusterView
         extends LinearLayout
         implements MSimNetworkController.MSimSignalCluster {
 
+    private static final int SIGNAL_CLUSTER_STYLE_NORMAL = 0;
+
     static final boolean DEBUG = false;
     static final String TAG = "MSimSignalClusterView";
 
@@ -53,11 +59,32 @@ public class MSimSignalClusterView
     private String mWifiDescription, mMobileTypeDescription;
     private String[] mMobileDescription;
 
+    private int mSignalClusterStyle;
+
     ViewGroup mWifiGroup, mMobileGroup, mMobileGroupSub2;
     ImageView mWifi, mWifiActivity, mMobile, mMobileActivity, mMobileType;
     ImageView mNoSimSlot, mNoSimSlotSub2;
     ImageView mMobileSub2, mMobileActivitySub2, mMobileTypeSub2;
     View mSpacer;
+
+    Handler mHandler;
+
+    class SettingsObserver extends ContentObserver {
+        SettingsObserver(Handler handler) {
+            super(handler);
+        }
+
+        void observe() {
+            ContentResolver resolver = mContext.getContentResolver();
+            resolver.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.STATUS_BAR_SIGNAL_TEXT), false, this);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            updateSettings();
+        }
+    }
 
     public MSimSignalClusterView(Context context) {
         this(context, null);
@@ -81,6 +108,11 @@ public class MSimSignalClusterView
             mMobileActivityId[i] = 0;
             mNoSimIconId[i] = 0;
         }
+
+        mHandler = new Handler();
+
+        SettingsObserver settingsObserver = new SettingsObserver(mHandler);
+        settingsObserver.observe();
     }
 
     public void setNetworkController(MSimNetworkController nc) {
@@ -233,6 +265,49 @@ public class MSimSignalClusterView
                 String.format("wifi: %s sig=%d act=%d",
                     (mWifiVisible ? "VISIBLE" : "GONE"),
                     mWifiStrengthId, mWifiActivityId));
+
+        mMobileType.setVisibility(
+                !mWifiVisible ? View.VISIBLE : View.GONE);
+
+        updateSettings();
+    }
+
+    private void updateSignalClusterStyle(int subscription) {
+	if(mSignalClusterStyle == SIGNAL_CLUSTER_STYLE_NORMAL
+                && mMobileVisible) {
+                mMobileGroup.setVisibility(View.VISIBLE);
+                mMobileGroupSub2.setVisibility(View.VISIBLE);
+	} else {
+                mMobileGroup.setVisibility(View.GONE);
+                mMobileGroupSub2.setVisibility(View.GONE);
+	}
+
+        mSpacer.setVisibility(mSignalClusterStyle != SIGNAL_CLUSTER_STYLE_NORMAL
+                ? View.INVISIBLE : View.GONE);
+
+        if (mSignalClusterStyle != SIGNAL_CLUSTER_STYLE_NORMAL
+                && mWifiVisible 
+                && (mIsAirplaneMode || mNoSimIconId[0] != 0)) {
+            mSpacer.setVisibility(View.INVISIBLE);
+        } else {
+            mSpacer.setVisibility(View.GONE);
+        }
+    }
+
+    private void updateSettings() {
+        int numPhones = TelephonyManager.getDefault().getPhoneCount(); 
+        ContentResolver resolver = mContext.getContentResolver();
+        mSignalClusterStyle = (Settings.System.getInt(resolver,
+                Settings.System.STATUS_BAR_SIGNAL_TEXT, SIGNAL_CLUSTER_STYLE_NORMAL));
+        for(int i=0; i < numPhones; i++)
+            updateSignalClusterStyle(i);
+    }
+
+    private void updateSettings(int subscription) {
+        ContentResolver resolver = mContext.getContentResolver();
+        mSignalClusterStyle = (Settings.System.getInt(resolver,
+                Settings.System.STATUS_BAR_SIGNAL_TEXT, SIGNAL_CLUSTER_STYLE_NORMAL));
+        updateSignalClusterStyle(subscription);
+
     }
 }
-
