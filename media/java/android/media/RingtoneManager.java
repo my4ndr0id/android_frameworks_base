@@ -26,7 +26,6 @@ import android.content.ContentUris;
 import android.app.ProfileGroup;
 import android.app.ProfileManager;
 import android.content.Context;
-import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Environment;
