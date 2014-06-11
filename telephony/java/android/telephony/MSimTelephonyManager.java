@@ -898,5 +898,18 @@ public class MSimTelephonyManager extends TelephonyManager {
             return MSimConstants.DEFAULT_SUBSCRIPTION;
         }
     }
-}
 
+    /*
+     * Get subscription is activated or not
+     * @return true if subscription is activated
+     */
+    public boolean isSubActive(int subscription) {
+        try {
+            return getITelephonyMSim().isSubActive(subscription);
+        } catch (RemoteException ex) {
+            return false;
+        } catch (NullPointerException ex) {
+            return false;
+        }
+    }
+}

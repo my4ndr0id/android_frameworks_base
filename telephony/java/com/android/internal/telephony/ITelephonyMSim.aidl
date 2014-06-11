@@ -367,5 +367,10 @@ interface ITelephonyMSim {
     boolean setPreferredDataSubscription(int subscription);
 
     boolean isSimPukLocked(int subscription);
-}
 
+    /*
+     * Get subscription is activated or not
+     * @return true if subscription is activated
+     */
+    boolean isSubActive(int subscription);
+}
